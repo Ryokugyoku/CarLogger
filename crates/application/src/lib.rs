@@ -14,7 +14,8 @@ pub trait CanFrameSource: Send {
 /// CANフレームの保存先。
 ///
 /// 実装例:
-/// - SqliteCanFrameRepository
+/// - DuckdbCanFrameRepository
+/// - StorageRepository
 /// - InMemoryCanFrameRepository
 pub trait CanFrameRepository: Send {
     fn save(&mut self, frame: &CanFrame) -> Result<()>;

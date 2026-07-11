@@ -1,6 +1,6 @@
 use crate::localization::{LANGUAGE_SETTING_KEY, Language, apply_language};
 use crate::ui::TranslationManager;
-use car_logger_storage::SqliteCanFrameRepository;
+use car_logger_storage::StorageRepository;
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, ComboBoxText, Label, glib};
 use std::cell::RefCell;
@@ -14,7 +14,7 @@ impl SettingsView {
     pub fn setup(
         builder: &gtk::Builder,
         translation_manager: Rc<RefCell<TranslationManager>>,
-        repository: Option<Rc<SqliteCanFrameRepository>>,
+        repository: Option<Rc<StorageRepository>>,
     ) -> Self {
         let root: GtkBox = builder
             .object("settings_view")

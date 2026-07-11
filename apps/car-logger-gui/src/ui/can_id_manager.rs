@@ -1,6 +1,6 @@
 use crate::ui::TranslationManager;
 use car_logger_domain::{CanIdObservation, SignalDefinition, SignalKind};
-use car_logger_storage::SqliteCanFrameRepository;
+use car_logger_storage::StorageRepository;
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Button, Entry, Grid, Label, ScrolledWindow, glib};
 use std::cell::RefCell;
@@ -14,7 +14,7 @@ impl CanIdManagerView {
     pub fn setup(
         builder: &gtk::Builder,
         translation_manager: Rc<RefCell<TranslationManager>>,
-        repository: Option<Rc<SqliteCanFrameRepository>>,
+        repository: Option<Rc<StorageRepository>>,
     ) -> Self {
         let root: ScrolledWindow = builder
             .object("can_id_manager_view")
@@ -68,7 +68,7 @@ impl CanIdManagerView {
 fn refresh_lists(
     known_list: &GtkBox,
     unknown_list: &GtkBox,
-    repository: Option<Rc<SqliteCanFrameRepository>>,
+    repository: Option<Rc<StorageRepository>>,
 ) {
     clear_box(known_list);
     clear_box(unknown_list);
@@ -116,7 +116,7 @@ fn refresh_lists(
 
 fn known_row(
     definition: SignalDefinition,
-    repository: Rc<SqliteCanFrameRepository>,
+    repository: Rc<StorageRepository>,
     known_list: &GtkBox,
     unknown_list: &GtkBox,
 ) -> Grid {
@@ -162,7 +162,7 @@ fn known_row(
 
 fn unknown_row(
     observation: CanIdObservation,
-    repository: Rc<SqliteCanFrameRepository>,
+    repository: Rc<StorageRepository>,
     known_list: &GtkBox,
     unknown_list: &GtkBox,
 ) -> Grid {

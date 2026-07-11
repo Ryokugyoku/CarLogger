@@ -56,6 +56,9 @@ rusqlite = { version = "0.40", features = [
     "serde_json",
 ] }
 
+# DuckDB
+duckdb = { version = "1.10504.0", features = ["bundled"] }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unused_must_use = "deny"

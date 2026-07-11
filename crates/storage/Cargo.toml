@@ -10,6 +10,7 @@ thiserror.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
+duckdb.workspace = true
 
 car-logger-domain = { path = "../domain" }
 car-logger-application = { path = "../application" }

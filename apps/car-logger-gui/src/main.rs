@@ -8,7 +8,7 @@ use crate::ui::can_id_manager::CanIdManagerView;
 use crate::ui::settings::SettingsView;
 use crate::ui::sidebar::Sidebar;
 use car_logger_application::CanFrameSource;
-use car_logger_storage::SqliteCanFrameRepository;
+use car_logger_storage::StorageRepository;
 #[cfg(target_os = "linux")]
 use car_logger_transport::SocketCanSource;
 use car_logger_transport::{SerialCanSource, list_connected_interfaces};
@@ -70,8 +70,8 @@ fn main() {
     application.run();
 }
 
-fn open_repository(database_path: &Path) -> Option<SqliteCanFrameRepository> {
-    match SqliteCanFrameRepository::open(database_path) {
+fn open_repository(database_path: &Path) -> Option<StorageRepository> {
+    match StorageRepository::open(database_path) {
         Ok(repository) => Some(repository),
         Err(error) => {
             tracing::error!(
@@ -111,7 +111,7 @@ fn load_css() {
 /// - 言語設定の変更を検知し、リポジトリへの保存と UI の動的翻訳更新を行うこと。
 /// - サイドバーのホバーによる展開・縮小アニメーションおよびボタンによる画面遷移を実現すること。
 /// - アプリケーションウィンドウを表示すること。
-fn build_ui(application: &Application, repository: Option<Rc<SqliteCanFrameRepository>>) {
+fn build_ui(application: &Application, repository: Option<Rc<StorageRepository>>) {
     let builder = gtk::Builder::from_resource("/com/carlogger/CarLogger/ui/window.ui");
     let window: ApplicationWindow = builder
         .object("CarLoggerWindow")
