@@ -1,0 +1,15 @@
+[package]
+name = "car-logger-domain"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+dashmap.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,180 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkScrolledWindow" id="can_id_manager_view">
+    <property name="hexpand">true</property>
+    <property name="vexpand">true</property>
+    <property name="hscrollbar-policy">never</property>
+    <child>
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+        <property name="spacing">18</property>
+        <style>
+          <class name="dashboard-root"/>
+        </style>
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">horizontal</property>
+            <property name="spacing">16</property>
+            <child>
+              <object class="GtkBox">
+                <property name="orientation">vertical</property>
+                <property name="spacing">6</property>
+                <property name="hexpand">true</property>
+                <child>
+                  <object class="GtkLabel" id="lbl_can_id_manager_title">
+                    <property name="label" translatable="yes">CAN ID Manager</property>
+                    <property name="halign">start</property>
+                    <style>
+                      <class name="title-label"/>
+                    </style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="lbl_can_id_manager_caption">
+                    <property name="label" translatable="yes">Review known definitions and promote unknown CAN IDs.</property>
+                    <property name="halign">start</property>
+                    <style>
+                      <class name="muted-label"/>
+                    </style>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkButton" id="btn_refresh_can_ids">
+                <property name="label" translatable="yes">Refresh</property>
+                <style>
+                  <class name="secondary-button"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">vertical</property>
+            <property name="spacing">12</property>
+            <style>
+              <class name="panel"/>
+            </style>
+            <child>
+              <object class="GtkLabel" id="lbl_known_can_ids">
+                <property name="label" translatable="yes">Known CAN IDs</property>
+                <property name="halign">start</property>
+                <style>
+                  <class name="section-title"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkGrid">
+                <property name="column-spacing">12</property>
+                <property name="row-spacing">8</property>
+                <style>
+                  <class name="manager-header"/>
+                </style>
+                <child>
+                  <object class="GtkLabel">
+                    <property name="label" translatable="yes">CAN ID</property>
+                    <property name="halign">start</property>
+                    <layout><property name="column">0</property><property name="row">0</property></layout>
+                    <style><class name="table-head"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel">
+                    <property name="label" translatable="yes">Name</property>
+                    <property name="halign">start</property>
+                    <layout><property name="column">1</property><property name="row">0</property></layout>
+                    <style><class name="table-head"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel">
+                    <property name="label" translatable="yes">Formula</property>
+                    <property name="halign">start</property>
+                    <layout><property name="column">2</property><property name="row">0</property></layout>
+                    <style><class name="table-head"/></style>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkBox" id="known_can_id_list">
+                <property name="orientation">vertical</property>
+                <property name="spacing">8</property>
+              </object>
+            </child>
+          </object>
+        </child>
+
+        <child>
+          <object class="GtkBox">
+            <property name="orientation">vertical</property>
+            <property name="spacing">12</property>
+            <style>
+              <class name="panel"/>
+            </style>
+            <child>
+              <object class="GtkLabel" id="lbl_unknown_can_ids">
+                <property name="label" translatable="yes">Unknown CAN IDs</property>
+                <property name="halign">start</property>
+                <style>
+                  <class name="section-title"/>
+                </style>
+              </object>
+            </child>
+            <child>
+              <object class="GtkGrid">
+                <property name="column-spacing">12</property>
+                <property name="row-spacing">8</property>
+                <style>
+                  <class name="manager-header"/>
+                </style>
+                <child>
+                  <object class="GtkLabel">
+                    <property name="label" translatable="yes">CAN ID</property>
+                    <property name="halign">start</property>
+                    <layout><property name="column">0</property><property name="row">0</property></layout>
+                    <style><class name="table-head"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel">
+                    <property name="label" translatable="yes">Payload</property>
+                    <property name="halign">start</property>
+                    <layout><property name="column">1</property><property name="row">0</property></layout>
+                    <style><class name="table-head"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel">
+                    <property name="label" translatable="yes">Count</property>
+                    <property name="halign">end</property>
+                    <layout><property name="column">2</property><property name="row">0</property></layout>
+                    <style><class name="table-head"/></style>
+                  </object>
+                </child>
+                <child>
+                  <object class="GtkLabel">
+                    <property name="label" translatable="yes">Name / Formula</property>
+                    <property name="halign">start</property>
+                    <layout><property name="column">3</property><property name="row">0</property></layout>
+                    <style><class name="table-head"/></style>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkBox" id="unknown_can_id_list">
+                <property name="orientation">vertical</property>
+                <property name="spacing">8</property>
+              </object>
+            </child>
+          </object>
+        </child>
+      </object>
+    </child>
+  </object>
+</interface>

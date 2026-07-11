@@ -1,0 +1,21 @@
+[package]
+name = "car-logger-storage"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+rusqlite.workspace = true
+
+car-logger-domain = { path = "../domain" }
+car-logger-application = { path = "../application" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkBox" id="settings_view">
+    <property name="orientation">vertical</property>
+    <property name="spacing">20</property>
+    <property name="margin-top">40</property>
+    <property name="margin-bottom">40</property>
+    <property name="margin-start">40</property>
+    <property name="margin-end">40</property>
+    <child>
+      <object class="GtkLabel" id="lbl_settings_title">
+        <property name="label" translatable="yes">Settings</property>
+        <style>
+          <class name="title-label"/>
+        </style>
+      </object>
+    </child>
+    <child>
+      <object class="GtkBox">
+        <property name="orientation">horizontal</property>
+        <property name="spacing">10</property>
+        <property name="halign">center</property>
+        <child>
+          <object class="GtkLabel" id="lbl_language">
+            <property name="label" translatable="yes">Language</property>
+          </object>
+        </child>
+        <child>
+          <object class="GtkComboBoxText" id="combo_language">
+            <items>
+              <item id="en">English</item>
+              <item id="ja">日本語</item>
+              <item id="es">Español</item>
+            </items>
+          </object>
+        </child>
+      </object>
+    </child>
+    <child>
+      <object class="GtkLabel" id="lbl_restart_info">
+        <property name="label" translatable="yes">Some changes might require restart.</property>
+        <style>
+          <class name="caption-label"/>
+        </style>
+      </object>
+    </child>
+  </object>
+</interface>

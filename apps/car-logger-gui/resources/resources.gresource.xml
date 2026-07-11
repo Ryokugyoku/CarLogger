@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/com/carlogger/CarLogger">
+    <file compressed="true">ui/window.ui</file>
+    <file compressed="true">ui/sidebar.ui</file>
+    <file compressed="true">ui/settings_view.ui</file>
+    <file compressed="true">ui/can_id_manager_view.ui</file>
+    <file compressed="true">css/style.css</file>
+    <file>icons/dashboard.svg</file>
+    <file>icons/logs.svg</file>
+    <file>icons/signals.svg</file>
+    <file>icons/maintenance.svg</file>
+    <file>icons/settings.svg</file>
+  </gresource>
+</gresources>

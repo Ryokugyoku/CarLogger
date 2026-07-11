@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<interface>
+  <object class="GtkBox" id="side_bar_root">
+    <property name="orientation">vertical</property>
+    <property name="width-request">60</property>
+    <style>
+      <class name="side-bar"/>
+    </style>
+    <child>
+      <object class="GtkToggleButton" id="btn_dashboard">
+        <style>
+          <class name="sidebar-item"/>
+        </style>
+        <property name="child">
+          <object class="GtkBox">
+            <property name="spacing">10</property>
+            <child>
+              <object class="GtkImage">
+                <property name="resource">/com/carlogger/CarLogger/icons/dashboard.svg</property>
+                <property name="pixel-size">24</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="lbl_dashboard">
+                <property name="label" translatable="yes">Dashboard</property>
+                <property name="visible">0</property>
+                <style>
+                  <class name="sidebar-label"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkToggleButton" id="btn_logs">
+        <style>
+          <class name="sidebar-item"/>
+        </style>
+        <property name="child">
+          <object class="GtkBox">
+            <property name="spacing">10</property>
+            <child>
+              <object class="GtkImage">
+                <property name="resource">/com/carlogger/CarLogger/icons/logs.svg</property>
+                <property name="pixel-size">24</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="lbl_logs">
+                <property name="label" translatable="yes">Log Analysis</property>
+                <property name="visible">0</property>
+                <style>
+                  <class name="sidebar-label"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkToggleButton" id="btn_maintenance">
+        <style>
+          <class name="sidebar-item"/>
+        </style>
+        <property name="child">
+          <object class="GtkBox">
+            <property name="spacing">10</property>
+            <child>
+              <object class="GtkImage">
+                <property name="resource">/com/carlogger/CarLogger/icons/maintenance.svg</property>
+                <property name="pixel-size">24</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="lbl_maintenance">
+                <property name="label" translatable="yes">Maintenance</property>
+                <property name="visible">0</property>
+                <style>
+                  <class name="sidebar-label"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkToggleButton" id="btn_can_ids">
+        <style>
+          <class name="sidebar-item"/>
+        </style>
+        <property name="child">
+          <object class="GtkBox">
+            <property name="spacing">10</property>
+            <child>
+              <object class="GtkImage">
+                <property name="resource">/com/carlogger/CarLogger/icons/signals.svg</property>
+                <property name="pixel-size">24</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="lbl_can_ids">
+                <property name="label" translatable="yes">CAN IDs</property>
+                <property name="visible">0</property>
+                <style>
+                  <class name="sidebar-label"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkToggleButton" id="btn_settings">
+        <style>
+          <class name="sidebar-item"/>
+        </style>
+        <property name="child">
+          <object class="GtkBox">
+            <property name="spacing">10</property>
+            <child>
+              <object class="GtkImage">
+                <property name="resource">/com/carlogger/CarLogger/icons/settings.svg</property>
+                <property name="pixel-size">24</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="lbl_settings">
+                <property name="label" translatable="yes">Settings</property>
+                <property name="visible">0</property>
+                <style>
+                  <class name="sidebar-label"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </child>
+  </object>
+</interface>
