@@ -29,7 +29,7 @@ use gtk::{
     Application, ApplicationWindow, Box as GtkBox, Button, ComboBoxText, CssProvider, Label, Stack,
     gio, glib,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -71,14 +71,25 @@ fn main() {
     let application = Application::builder()
         .application_id(APPLICATION_ID)
         .build();
+    let inhibit_cookie = Rc::new(Cell::new(None));
 
     application.connect_startup(|_| {
         load_css();
     });
 
+    application.connect_shutdown(glib::clone!(
+        #[strong]
+        inhibit_cookie,
+        move |app| {
+            if let Some(cookie) = inhibit_cookie.take() {
+                app.uninhibit(cookie);
+            }
+        }
+    ));
+
     application.connect_activate(move |app| {
         let repo = open_repository(&database_path).map(Rc::new);
-        build_ui(app, repo, database_path.clone());
+        build_ui(app, repo, database_path.clone(), &inhibit_cookie);
     });
     application.run();
 }
@@ -128,12 +139,26 @@ fn build_ui(
     application: &Application,
     repository: Option<Rc<StorageRepository>>,
     database_path: PathBuf,
+    inhibit_cookie: &Cell<Option<u32>>,
 ) {
     let builder = gtk::Builder::from_resource("/com/carlogger/CarLogger/ui/window.ui");
     let window: ApplicationWindow = builder
         .object("CarLoggerWindow")
         .expect("Could not find CarLoggerWindow");
     window.set_application(Some(application));
+
+    if inhibit_cookie.get().is_none() {
+        let cookie = application.inhibit(
+            Some(&window),
+            gtk::ApplicationInhibitFlags::IDLE | gtk::ApplicationInhibitFlags::SUSPEND,
+            Some("Car Logger is running"),
+        );
+        if cookie == 0 {
+            tracing::warn!("The system did not accept the sleep inhibition request");
+        } else {
+            inhibit_cookie.set(Some(cookie));
+        }
+    }
 
     let translation_manager = Rc::new(RefCell::new(TranslationManager::new()));
 
