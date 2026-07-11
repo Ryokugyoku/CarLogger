@@ -2,6 +2,7 @@
 <gresources>
   <gresource prefix="/com/carlogger/CarLogger">
     <file compressed="true">ui/window.ui</file>
+    <file compressed="true">ui/dashboard.ui</file>
     <file compressed="true">ui/sidebar.ui</file>
     <file compressed="true">ui/settings_view.ui</file>
     <file compressed="true">ui/can_id_manager_view.ui</file>

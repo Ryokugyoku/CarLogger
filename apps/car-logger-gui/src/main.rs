@@ -167,7 +167,11 @@ fn build_ui(
         .object("dashboard_view")
         .expect("Could not find dashboard_view");
     dashboard_container.append(&dashboard_view);
-    setup_dashboard_refresh(&dashboard_builder, realtime_state);
+    setup_dashboard_refresh(
+        &dashboard_builder,
+        realtime_state,
+        translation_manager.clone(),
+    );
 
     // 各ページのタイトルラベルを登録（window.ui内）
     if let Some(lbl) = dashboard_builder.object::<Label>("lbl_dash_title") {
@@ -247,9 +251,6 @@ fn setup_transport_header(
         connect_button.set_sensitive(true);
     }
 
-    let last_seen_label: Label = builder
-        .object("lbl_last_seen")
-        .expect("Could not find lbl_last_seen");
     let active_session: Rc<RefCell<Option<RealtimeLoggingSession>>> = Rc::new(RefCell::new(None));
     let (event_sender, event_receiver) = unbounded::<RealtimeLoggingEvent>();
 
@@ -261,19 +262,12 @@ fn setup_transport_header(
             #[strong]
             status_label,
             #[strong]
-            last_seen_label,
-            #[strong]
             active_session,
             move || {
                 for event in event_receiver.try_iter() {
                     match event {
-                        RealtimeLoggingEvent::Saved {
-                            total_frames,
-                            latest,
-                        } => {
+                        RealtimeLoggingEvent::Saved { total_frames } => {
                             status_label.set_text(&format!("Logging: {total_frames} frames saved"));
-                            last_seen_label
-                                .set_text(&latest.format("%H:%M:%S%.3f UTC").to_string());
                         }
                         RealtimeLoggingEvent::Decoded { name, value, unit } => {
                             status_label.set_text(&format!(

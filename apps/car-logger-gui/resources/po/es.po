@@ -124,3 +124,105 @@ msgstr "actual"
 
 msgid "Some changes might require restart."
 msgstr "Algunos cambios pueden requerir un reinicio."
+
+msgid "Realtime vehicle telemetry"
+msgstr "Telemetría del vehículo en tiempo real"
+
+msgid "● LIVE"
+msgstr "● EN VIVO"
+
+msgid "ENGINE"
+msgstr "MOTOR"
+
+msgid "Vehicle speed"
+msgstr "Velocidad"
+
+msgid "Intake pressure"
+msgstr "Presión de admisión"
+
+msgid "Timing advance"
+msgstr "Avance de encendido"
+
+msgid "Voltage"
+msgstr "Voltaje"
+
+msgid "LIVE RATIOS"
+msgstr "PROPORCIONES EN VIVO"
+
+msgid "TEMPERATURES"
+msgstr "TEMPERATURAS"
+
+msgid "Coolant"
+msgstr "Refrigerante"
+
+msgid "Intake air"
+msgstr "Aire de admisión"
+
+msgid "Ambient"
+msgstr "Ambiente"
+
+msgid "Engine oil"
+msgstr "Aceite del motor"
+
+msgid "Catalyst"
+msgstr "Catalizador"
+
+msgid "TRIP & DIAGNOSTICS"
+msgstr "VIAJE Y DIAGNÓSTICO"
+
+msgid "MIL distance"
+msgstr "Distancia con MIL"
+
+msgid "DTC cleared distance"
+msgstr "Distancia desde borrado DTC"
+
+msgid "Engine run time"
+msgstr "Tiempo del motor"
+
+msgid "Signal"
+msgstr "Señal"
+
+msgid "Value"
+msgstr "Valor"
+
+msgid "Source"
+msgstr "Origen"
+
+msgid "CAN ID"
+msgstr "ID CAN"
+
+msgid "Payload"
+msgstr "Carga útil"
+
+msgid "Count"
+msgstr "Conteo"
+
+msgid "Engine load"
+msgstr "Carga del motor"
+
+msgid "Throttle"
+msgstr "Acelerador"
+
+msgid "Accelerator"
+msgstr "Pedal del acelerador"
+
+msgid "Commanded throttle"
+msgstr "Acelerador solicitado"
+
+msgid "Short fuel trim"
+msgstr "Ajuste corto de combustible"
+
+msgid "Long fuel trim"
+msgstr "Ajuste largo de combustible"
+
+msgid "Fuel level"
+msgstr "Nivel de combustible"
+
+msgid "No frames"
+msgstr "Sin tramas"
+
+msgid "Waiting for decoded CAN/PID values"
+msgstr "Esperando valores CAN/PID decodificados"
+
+msgid "No unknown frames"
+msgstr "No hay tramas desconocidas"

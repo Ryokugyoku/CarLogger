@@ -124,3 +124,105 @@ msgstr "最新"
 
 msgid "Some changes might require restart."
 msgstr "一部の変更を適用するには再起動が必要な場合があります。"
+
+msgid "Realtime vehicle telemetry"
+msgstr "リアルタイム車両テレメトリー"
+
+msgid "● LIVE"
+msgstr "● ライブ"
+
+msgid "ENGINE"
+msgstr "エンジン"
+
+msgid "Vehicle speed"
+msgstr "車速"
+
+msgid "Intake pressure"
+msgstr "吸気圧"
+
+msgid "Timing advance"
+msgstr "点火時期"
+
+msgid "Voltage"
+msgstr "電圧"
+
+msgid "LIVE RATIOS"
+msgstr "リアルタイム比率"
+
+msgid "TEMPERATURES"
+msgstr "温度"
+
+msgid "Coolant"
+msgstr "冷却水"
+
+msgid "Intake air"
+msgstr "吸気"
+
+msgid "Ambient"
+msgstr "外気"
+
+msgid "Engine oil"
+msgstr "エンジンオイル"
+
+msgid "Catalyst"
+msgstr "触媒"
+
+msgid "TRIP & DIAGNOSTICS"
+msgstr "走行・診断情報"
+
+msgid "MIL distance"
+msgstr "警告灯点灯中の距離"
+
+msgid "DTC cleared distance"
+msgstr "故障コード消去後の距離"
+
+msgid "Engine run time"
+msgstr "エンジン経過時間"
+
+msgid "Signal"
+msgstr "信号"
+
+msgid "Value"
+msgstr "値"
+
+msgid "Source"
+msgstr "送信元"
+
+msgid "CAN ID"
+msgstr "CAN ID"
+
+msgid "Payload"
+msgstr "ペイロード"
+
+msgid "Count"
+msgstr "回数"
+
+msgid "Engine load"
+msgstr "エンジン負荷"
+
+msgid "Throttle"
+msgstr "スロットル"
+
+msgid "Accelerator"
+msgstr "アクセル"
+
+msgid "Commanded throttle"
+msgstr "指示スロットル"
+
+msgid "Short fuel trim"
+msgstr "短期燃調"
+
+msgid "Long fuel trim"
+msgstr "長期燃調"
+
+msgid "Fuel level"
+msgstr "燃料残量"
+
+msgid "No frames"
+msgstr "フレーム未受信"
+
+msgid "Waiting for decoded CAN/PID values"
+msgstr "CAN/PIDの解析値を待っています"
+
+msgid "No unknown frames"
+msgstr "不明なフレームはありません"

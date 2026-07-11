@@ -150,6 +150,80 @@
     font-weight: 800;
 }
 
+.dashboard-card {
+    border-radius: 14px;
+    padding: 18px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.engine-card {
+    background: linear-gradient(135deg, #1c2427, #171c21);
+    border-top: 2px solid #00c28e;
+}
+
+.temperature-card {
+    background: linear-gradient(135deg, #231e21, #191b20);
+    border-top: 2px solid #ff765f;
+}
+
+.ratio-card {
+    background: linear-gradient(145deg, #1c2029, #171a21);
+    border-top: 2px solid #7b8cff;
+}
+
+.dashboard-section-title {
+    color: #dce5eb;
+    font-size: 10pt;
+    font-weight: 900;
+    letter-spacing: 1.4px;
+}
+
+.dashboard-metric-value {
+    color: #ffffff;
+    font-size: 20pt;
+    font-weight: 900;
+}
+
+.ratio-chart {
+    background: rgba(12, 15, 20, 0.42);
+    border-radius: 9px;
+    padding: 9px 11px;
+}
+
+.ratio-chart-label {
+    color: #aeb8c2;
+    font-size: 9pt;
+    font-weight: 700;
+}
+
+.ratio-chart-value {
+    color: #eef3ff;
+    font-size: 10pt;
+    font-weight: 900;
+}
+
+progressbar.ratio-progress {
+    min-height: 8px;
+}
+
+progressbar.ratio-progress trough {
+    min-height: 8px;
+    background: #10141a;
+    border: 1px solid #2b3441;
+    border-radius: 999px;
+}
+
+progressbar.ratio-progress progress {
+    min-height: 8px;
+    background: linear-gradient(90deg, #00c28e, #54e6ff, #7b8cff);
+    border-radius: 999px;
+    box-shadow: 0 0 10px rgba(84, 230, 255, 0.45);
+}
+
+.live-glow {
+    box-shadow: 0 0 16px rgba(34, 217, 166, 0.18);
+}
+
 .accent-teal {
     border-left: 4px solid #00c28e;
 }
