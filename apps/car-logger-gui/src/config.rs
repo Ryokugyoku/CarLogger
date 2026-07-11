@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const DATABASE_FILE_NAME: &str = "car-logger.db";
 const DATABASE_PATH_ENV: &str = "CAR_LOGGER_DB_PATH";
@@ -13,6 +13,10 @@ pub fn database_path() -> PathBuf {
     }
 
     PathBuf::from(DATABASE_FILE_NAME)
+}
+
+pub fn log_database_path(master_database_path: &Path) -> PathBuf {
+    master_database_path.with_extension("duckdb")
 }
 
 fn workspace_root() -> PathBuf {

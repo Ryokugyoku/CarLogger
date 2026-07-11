@@ -9,6 +9,7 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 crossbeam-channel.workspace = true
+chrono.workspace = true
 gtk.workspace = true
 gio = { package = "gio", version = "0.20" }
 gettext-rs = { version = "0.7", features = ["gettext-system"] }

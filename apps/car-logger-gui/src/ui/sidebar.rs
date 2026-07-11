@@ -23,6 +23,9 @@ impl Sidebar {
             .object("btn_dashboard")
             .expect("Could not find btn_dashboard");
         let btn_logs: ToggleButton = builder.object("btn_logs").expect("Could not find btn_logs");
+        let btn_charts: ToggleButton = builder
+            .object("btn_charts")
+            .expect("Could not find btn_charts");
         let btn_maintenance: ToggleButton = builder
             .object("btn_maintenance")
             .expect("Could not find btn_maintenance");
@@ -37,6 +40,9 @@ impl Sidebar {
             .object("lbl_dashboard")
             .expect("Could not find lbl_dashboard");
         let lbl_logs: Label = builder.object("lbl_logs").expect("Could not find lbl_logs");
+        let lbl_charts: Label = builder
+            .object("lbl_charts")
+            .expect("Could not find lbl_charts");
         let lbl_maintenance: Label = builder
             .object("lbl_maintenance")
             .expect("Could not find lbl_maintenance");
@@ -51,14 +57,16 @@ impl Sidebar {
             let mut tm = translation_manager.borrow_mut();
             tm.add(lbl_dashboard.clone(), "Dashboard");
             tm.add(lbl_logs.clone(), "Log Analysis");
+            tm.add(lbl_charts.clone(), "Data Charts");
             tm.add(lbl_maintenance.clone(), "Maintenance");
-            tm.add(lbl_can_ids.clone(), "CAN IDs");
+            tm.add(lbl_can_ids.clone(), "IDs");
             tm.add(lbl_settings.clone(), "Settings");
         }
 
         let labels = vec![
             lbl_dashboard,
             lbl_logs,
+            lbl_charts,
             lbl_maintenance,
             lbl_can_ids,
             lbl_settings,
@@ -97,6 +105,7 @@ impl Sidebar {
         let buttons = vec![
             (btn_dashboard.clone(), "dashboard"),
             (btn_logs.clone(), "logs"),
+            (btn_charts.clone(), "charts"),
             (btn_maintenance.clone(), "maintenance"),
             (btn_can_ids.clone(), "can_ids"),
             (btn_settings.clone(), "settings"),

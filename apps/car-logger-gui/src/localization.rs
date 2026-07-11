@@ -81,9 +81,57 @@ fn translate_for_language(language: Language, msgid: &str) -> &str {
         Language::Japanese => match msgid {
             "Dashboard" => "ダッシュボード",
             "Log Analysis" => "ログ分析",
+            "Data Charts" => "データチャート",
             "Maintenance" => "整備記録",
+            "CAN IDs" => "CAN ID",
+            "IDs" => "ID",
             "Settings" => "設定",
             "Language" => "言語",
+            "CAN ID Manager" => "CAN ID管理",
+            "ID Manager" => "ID管理",
+            "Review known definitions and promote unknown CAN IDs." => {
+                "既知の定義を確認し、不明なCAN IDを登録します。"
+            }
+            "Review known definitions and promote unknown IDs." => {
+                "既知の定義を確認し、不明なIDを登録します。"
+            }
+            "Known PIDs" => "既知のPID",
+            "Known CAN IDs" => "既知のCAN ID",
+            "Unknown PIDs" => "不明なPID",
+            "Unknown CAN IDs" => "不明なCAN ID",
+            "Known Signals" => "既知の信号",
+            "Plot DuckDB log data by known PID or CAN ID definitions." => {
+                "DuckDBのログデータを既知のPIDまたはCAN ID定義で表示します。"
+            }
+            "Select signals to overlay on the time axis." => {
+                "時間軸に重ねて表示する信号を選択します。"
+            }
+            "Time Series" => "時系列",
+            "No data loaded" => "データが読み込まれていません",
+            "Compare" => "比較",
+            "Absolute" => "実値",
+            "Refresh" => "更新",
+            "Compare scales each selected signal to 0-100% and keeps actual ranges in the legend." => {
+                "比較表示では各信号を0-100%に正規化し、実値範囲は凡例に表示します。"
+            }
+            "No known PIDs" => "既知のPIDがありません",
+            "No known CAN IDs" => "既知のCAN IDがありません",
+            "No unknown PIDs" => "不明なPIDはありません",
+            "No unknown CAN IDs" => "不明なCAN IDはありません",
+            "No known signal definitions" => "既知の信号定義がありません",
+            "Repository is unavailable" => "リポジトリを利用できません",
+            "Select signals" => "信号を選択してください",
+            "Failed to load" => "読み込みに失敗しました",
+            "Save" => "保存",
+            "Promote" => "登録",
+            "Name" => "名前",
+            "Formula" => "式",
+            "No selected signal data" => "選択された信号データがありません",
+            "normalized per signal" => "信号ごとに正規化",
+            "absolute values" => "実値",
+            "series" => "系列",
+            "points" => "点",
+            "now" => "最新",
             "Some changes might require restart." => {
                 "一部の変更を適用するには再起動が必要な場合があります。"
             }
@@ -92,9 +140,57 @@ fn translate_for_language(language: Language, msgid: &str) -> &str {
         Language::Spanish => match msgid {
             "Dashboard" => "Tablero",
             "Log Analysis" => "Análisis de registros",
+            "Data Charts" => "Gráficas de datos",
             "Maintenance" => "Mantenimiento",
+            "CAN IDs" => "IDs CAN",
+            "IDs" => "IDs",
             "Settings" => "Configuración",
             "Language" => "Idioma",
+            "CAN ID Manager" => "Gestor de IDs CAN",
+            "ID Manager" => "Gestor de IDs",
+            "Review known definitions and promote unknown CAN IDs." => {
+                "Revise definiciones conocidas y registre IDs CAN desconocidos."
+            }
+            "Review known definitions and promote unknown IDs." => {
+                "Revise definiciones conocidas y registre IDs desconocidos."
+            }
+            "Known PIDs" => "PIDs conocidos",
+            "Known CAN IDs" => "IDs CAN conocidos",
+            "Unknown PIDs" => "PIDs desconocidos",
+            "Unknown CAN IDs" => "IDs CAN desconocidos",
+            "Known Signals" => "Señales conocidas",
+            "Plot DuckDB log data by known PID or CAN ID definitions." => {
+                "Grafique los registros de DuckDB con definiciones conocidas de PID o ID CAN."
+            }
+            "Select signals to overlay on the time axis." => {
+                "Seleccione señales para superponerlas en el eje de tiempo."
+            }
+            "Time Series" => "Serie temporal",
+            "No data loaded" => "No hay datos cargados",
+            "Compare" => "Comparar",
+            "Absolute" => "Absoluto",
+            "Refresh" => "Actualizar",
+            "Compare scales each selected signal to 0-100% and keeps actual ranges in the legend." => {
+                "Comparar escala cada señal a 0-100% y conserva los rangos reales en la leyenda."
+            }
+            "No known PIDs" => "No hay PIDs conocidos",
+            "No known CAN IDs" => "No hay IDs CAN conocidos",
+            "No unknown PIDs" => "No hay PIDs desconocidos",
+            "No unknown CAN IDs" => "No hay IDs CAN desconocidos",
+            "No known signal definitions" => "No hay definiciones de señal conocidas",
+            "Repository is unavailable" => "El repositorio no está disponible",
+            "Select signals" => "Seleccione señales",
+            "Failed to load" => "Error al cargar",
+            "Save" => "Guardar",
+            "Promote" => "Registrar",
+            "Name" => "Nombre",
+            "Formula" => "Fórmula",
+            "No selected signal data" => "No hay datos para las señales seleccionadas",
+            "normalized per signal" => "normalizado por señal",
+            "absolute values" => "valores absolutos",
+            "series" => "series",
+            "points" => "puntos",
+            "now" => "actual",
             "Some changes might require restart." => "Algunos cambios pueden requerir un reinicio.",
             _ => msgid,
         },
@@ -129,6 +225,14 @@ mod tests {
         assert_eq!(
             translate_for_language(Language::Spanish, "Language"),
             "Idioma"
+        );
+        assert_eq!(
+            translate_for_language(Language::Japanese, "Data Charts"),
+            "データチャート"
+        );
+        assert_eq!(
+            translate_for_language(Language::Spanish, "Compare"),
+            "Comparar"
         );
         assert_eq!(
             translate_for_language(Language::Japanese, "Unknown"),

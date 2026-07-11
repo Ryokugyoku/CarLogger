@@ -17,14 +17,110 @@ msgstr "Tablero"
 msgid "Log Analysis"
 msgstr "Análisis de registros"
 
+msgid "Data Charts"
+msgstr "Gráficas de datos"
+
 msgid "Maintenance"
 msgstr "Mantenimiento"
+
+msgid "CAN IDs"
+msgstr "IDs CAN"
 
 msgid "Settings"
 msgstr "Configuración"
 
 msgid "Language"
 msgstr "Idioma"
+
+msgid "CAN ID Manager"
+msgstr "Gestor de IDs CAN"
+
+msgid "Review known definitions and promote unknown CAN IDs."
+msgstr "Revise definiciones conocidas y registre IDs CAN desconocidos."
+
+msgid "Known CAN IDs"
+msgstr "IDs CAN conocidos"
+
+msgid "Unknown CAN IDs"
+msgstr "IDs CAN desconocidos"
+
+msgid "Known Signals"
+msgstr "Señales conocidas"
+
+msgid "Plot DuckDB log data by known PID or CAN ID definitions."
+msgstr "Grafique los registros de DuckDB con definiciones conocidas de PID o ID CAN."
+
+msgid "Select signals to overlay on the time axis."
+msgstr "Seleccione señales para superponerlas en el eje de tiempo."
+
+msgid "Time Series"
+msgstr "Serie temporal"
+
+msgid "No data loaded"
+msgstr "No hay datos cargados"
+
+msgid "Compare"
+msgstr "Comparar"
+
+msgid "Absolute"
+msgstr "Absoluto"
+
+msgid "Refresh"
+msgstr "Actualizar"
+
+msgid "Compare scales each selected signal to 0-100% and keeps actual ranges in the legend."
+msgstr "Comparar escala cada señal a 0-100% y conserva los rangos reales en la leyenda."
+
+msgid "No known PIDs"
+msgstr "No hay PIDs conocidos"
+
+msgid "No known CAN IDs"
+msgstr "No hay IDs CAN conocidos"
+
+msgid "No unknown CAN IDs"
+msgstr "No hay IDs CAN desconocidos"
+
+msgid "No known signal definitions"
+msgstr "No hay definiciones de señal conocidas"
+
+msgid "Repository is unavailable"
+msgstr "El repositorio no está disponible"
+
+msgid "Select signals"
+msgstr "Seleccione señales"
+
+msgid "Failed to load"
+msgstr "Error al cargar"
+
+msgid "Save"
+msgstr "Guardar"
+
+msgid "Promote"
+msgstr "Registrar"
+
+msgid "Name"
+msgstr "Nombre"
+
+msgid "Formula"
+msgstr "Fórmula"
+
+msgid "No selected signal data"
+msgstr "No hay datos para las señales seleccionadas"
+
+msgid "normalized per signal"
+msgstr "normalizado por señal"
+
+msgid "absolute values"
+msgstr "valores absolutos"
+
+msgid "series"
+msgstr "series"
+
+msgid "points"
+msgstr "puntos"
+
+msgid "now"
+msgstr "actual"
 
 msgid "Some changes might require restart."
 msgstr "Algunos cambios pueden requerir un reinicio."

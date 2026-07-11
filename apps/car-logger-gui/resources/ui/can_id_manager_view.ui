@@ -22,7 +22,7 @@
                 <property name="hexpand">true</property>
                 <child>
                   <object class="GtkLabel" id="lbl_can_id_manager_title">
-                    <property name="label" translatable="yes">CAN ID Manager</property>
+                    <property name="label" translatable="yes">ID Manager</property>
                     <property name="halign">start</property>
                     <style>
                       <class name="title-label"/>
@@ -38,6 +38,15 @@
                     </style>
                   </object>
                 </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkBox" id="id_manager_mode_box">
+                <property name="orientation">horizontal</property>
+                <property name="spacing">0</property>
+                <style>
+                  <class name="segmented-control"/>
+                </style>
               </object>
             </child>
             <child>
@@ -75,7 +84,7 @@
                   <class name="manager-header"/>
                 </style>
                 <child>
-                  <object class="GtkLabel">
+                  <object class="GtkLabel" id="lbl_known_id_header">
                     <property name="label" translatable="yes">CAN ID</property>
                     <property name="halign">start</property>
                     <layout><property name="column">0</property><property name="row">0</property></layout>
@@ -83,7 +92,7 @@
                   </object>
                 </child>
                 <child>
-                  <object class="GtkLabel">
+                  <object class="GtkLabel" id="lbl_unknown_id_header">
                     <property name="label" translatable="yes">Name</property>
                     <property name="halign">start</property>
                     <layout><property name="column">1</property><property name="row">0</property></layout>

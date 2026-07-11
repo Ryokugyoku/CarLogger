@@ -61,6 +61,33 @@
       </object>
     </child>
     <child>
+      <object class="GtkToggleButton" id="btn_charts">
+        <style>
+          <class name="sidebar-item"/>
+        </style>
+        <property name="child">
+          <object class="GtkBox">
+            <property name="spacing">10</property>
+            <child>
+              <object class="GtkImage">
+                <property name="resource">/com/carlogger/CarLogger/icons/signals.svg</property>
+                <property name="pixel-size">24</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="lbl_charts">
+                <property name="label" translatable="yes">Data Charts</property>
+                <property name="visible">0</property>
+                <style>
+                  <class name="sidebar-label"/>
+                </style>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </child>
+    <child>
       <object class="GtkToggleButton" id="btn_maintenance">
         <style>
           <class name="sidebar-item"/>
@@ -103,7 +130,7 @@
             </child>
             <child>
               <object class="GtkLabel" id="lbl_can_ids">
-                <property name="label" translatable="yes">CAN IDs</property>
+                <property name="label" translatable="yes">IDs</property>
                 <property name="visible">0</property>
                 <style>
                   <class name="sidebar-label"/>

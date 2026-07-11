@@ -17,14 +17,110 @@ msgstr "ダッシュボード"
 msgid "Log Analysis"
 msgstr "ログ分析"
 
+msgid "Data Charts"
+msgstr "データチャート"
+
 msgid "Maintenance"
 msgstr "整備記録"
+
+msgid "CAN IDs"
+msgstr "CAN ID"
 
 msgid "Settings"
 msgstr "設定"
 
 msgid "Language"
 msgstr "言語"
+
+msgid "CAN ID Manager"
+msgstr "CAN ID管理"
+
+msgid "Review known definitions and promote unknown CAN IDs."
+msgstr "既知の定義を確認し、不明なCAN IDを登録します。"
+
+msgid "Known CAN IDs"
+msgstr "既知のCAN ID"
+
+msgid "Unknown CAN IDs"
+msgstr "不明なCAN ID"
+
+msgid "Known Signals"
+msgstr "既知の信号"
+
+msgid "Plot DuckDB log data by known PID or CAN ID definitions."
+msgstr "DuckDBのログデータを既知のPIDまたはCAN ID定義で表示します。"
+
+msgid "Select signals to overlay on the time axis."
+msgstr "時間軸に重ねて表示する信号を選択します。"
+
+msgid "Time Series"
+msgstr "時系列"
+
+msgid "No data loaded"
+msgstr "データが読み込まれていません"
+
+msgid "Compare"
+msgstr "比較"
+
+msgid "Absolute"
+msgstr "実値"
+
+msgid "Refresh"
+msgstr "更新"
+
+msgid "Compare scales each selected signal to 0-100% and keeps actual ranges in the legend."
+msgstr "比較表示では各信号を0-100%に正規化し、実値範囲は凡例に表示します。"
+
+msgid "No known PIDs"
+msgstr "既知のPIDがありません"
+
+msgid "No known CAN IDs"
+msgstr "既知のCAN IDがありません"
+
+msgid "No unknown CAN IDs"
+msgstr "不明なCAN IDはありません"
+
+msgid "No known signal definitions"
+msgstr "既知の信号定義がありません"
+
+msgid "Repository is unavailable"
+msgstr "リポジトリを利用できません"
+
+msgid "Select signals"
+msgstr "信号を選択してください"
+
+msgid "Failed to load"
+msgstr "読み込みに失敗しました"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Promote"
+msgstr "登録"
+
+msgid "Name"
+msgstr "名前"
+
+msgid "Formula"
+msgstr "式"
+
+msgid "No selected signal data"
+msgstr "選択された信号データがありません"
+
+msgid "normalized per signal"
+msgstr "信号ごとに正規化"
+
+msgid "absolute values"
+msgstr "実値"
+
+msgid "series"
+msgstr "系列"
+
+msgid "points"
+msgstr "点"
+
+msgid "now"
+msgstr "最新"
 
 msgid "Some changes might require restart."
 msgstr "一部の変更を適用するには再起動が必要な場合があります。"

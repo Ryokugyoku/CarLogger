@@ -409,6 +409,7 @@ dependencies = [
  "car-logger-domain",
  "car-logger-storage",
  "car-logger-transport",
+ "chrono",
  "crossbeam-channel",
  "gettext-rs",
  "gio 0.20.12",

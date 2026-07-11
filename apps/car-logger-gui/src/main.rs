@@ -1,17 +1,28 @@
 mod config;
+mod dashboard;
 mod localization;
+mod realtime_logging;
+mod signal_decoder;
 mod ui;
 
+use crate::dashboard::setup_dashboard_refresh;
 use crate::localization::{LANGUAGE_SETTING_KEY, Language, apply_language};
+use crate::realtime_logging::{
+    RealtimeLoggingEvent, RealtimeLoggingSession, spawn_realtime_logging,
+};
+use crate::signal_decoder::definition_map;
 use crate::ui::TranslationManager;
 use crate::ui::can_id_manager::CanIdManagerView;
+use crate::ui::log_charts::LogChartsView;
 use crate::ui::settings::SettingsView;
 use crate::ui::sidebar::Sidebar;
 use car_logger_application::CanFrameSource;
+use car_logger_domain::{RealtimeState, SignalKind};
 use car_logger_storage::StorageRepository;
 #[cfg(target_os = "linux")]
 use car_logger_transport::SocketCanSource;
-use car_logger_transport::{SerialCanSource, list_connected_interfaces};
+use car_logger_transport::{ConnectionMode, SerialCanSource, list_connected_interfaces};
+use crossbeam_channel::unbounded;
 use gettextrs::{bindtextdomain, textdomain};
 use gtk::prelude::*;
 use gtk::{
@@ -19,8 +30,10 @@ use gtk::{
     gio, glib,
 };
 use std::cell::RefCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+use std::time::Duration;
 
 const APPLICATION_ID: &str = "com.carlogger.CarLogger";
 
@@ -65,7 +78,7 @@ fn main() {
 
     application.connect_activate(move |app| {
         let repo = open_repository(&database_path).map(Rc::new);
-        build_ui(app, repo);
+        build_ui(app, repo, database_path.clone());
     });
     application.run();
 }
@@ -106,12 +119,16 @@ fn load_css() {
 /// * `repository` - 設定の保存・取得に使用するデータベースリポジトリ（任意）。
 ///
 /// # 要件
-/// - GResource から UI 定義（window.ui, sidebar.ui, settings_view.ui）を読み込むこと。
+/// - GResource から各画面の UI 定義を読み込むこと。
 /// - 各ページのタイトルや設定画面のラベルを `TranslationManager` に登録すること。
 /// - 言語設定の変更を検知し、リポジトリへの保存と UI の動的翻訳更新を行うこと。
 /// - サイドバーのホバーによる展開・縮小アニメーションおよびボタンによる画面遷移を実現すること。
 /// - アプリケーションウィンドウを表示すること。
-fn build_ui(application: &Application, repository: Option<Rc<StorageRepository>>) {
+fn build_ui(
+    application: &Application,
+    repository: Option<Rc<StorageRepository>>,
+    database_path: PathBuf,
+) {
     let builder = gtk::Builder::from_resource("/com/carlogger/CarLogger/ui/window.ui");
     let window: ApplicationWindow = builder
         .object("CarLoggerWindow")
@@ -132,10 +149,28 @@ fn build_ui(application: &Application, repository: Option<Rc<StorageRepository>>
     let can_id_manager_container: GtkBox = builder
         .object("can_id_manager_container")
         .expect("Could not find can_id_manager_container");
-    setup_transport_header(&builder);
+    let log_chart_container: GtkBox = builder
+        .object("log_chart_container")
+        .expect("Could not find log_chart_container");
+    let dashboard_container: GtkBox = builder
+        .object("dashboard_container")
+        .expect("Could not find dashboard_container");
+    let realtime_state = Arc::new(RealtimeState::new());
+    setup_transport_header(
+        &builder,
+        repository.clone(),
+        config::log_database_path(&database_path),
+        realtime_state.clone(),
+    );
+    let dashboard_builder = gtk::Builder::from_resource("/com/carlogger/CarLogger/ui/dashboard.ui");
+    let dashboard_view: gtk::ScrolledWindow = dashboard_builder
+        .object("dashboard_view")
+        .expect("Could not find dashboard_view");
+    dashboard_container.append(&dashboard_view);
+    setup_dashboard_refresh(&dashboard_builder, realtime_state);
 
     // 各ページのタイトルラベルを登録（window.ui内）
-    if let Some(lbl) = builder.object::<Label>("lbl_dash_title") {
+    if let Some(lbl) = dashboard_builder.object::<Label>("lbl_dash_title") {
         translation_manager.borrow_mut().add(lbl, "Dashboard");
     }
     if let Some(lbl) = builder.object::<Label>("lbl_logs_title") {
@@ -160,6 +195,9 @@ fn build_ui(application: &Application, repository: Option<Rc<StorageRepository>>
     );
     can_id_manager_container.append(can_id_manager_view.widget());
 
+    let log_charts_view = LogChartsView::setup(translation_manager.clone(), repository.clone());
+    log_chart_container.append(log_charts_view.widget());
+
     // 設定画面の読み込み
     let settings_builder =
         gtk::Builder::from_resource("/com/carlogger/CarLogger/ui/settings_view.ui");
@@ -172,7 +210,12 @@ fn build_ui(application: &Application, repository: Option<Rc<StorageRepository>>
     window.present();
 }
 
-fn setup_transport_header(builder: &gtk::Builder) {
+fn setup_transport_header(
+    builder: &gtk::Builder,
+    repository: Option<Rc<StorageRepository>>,
+    log_database_path: PathBuf,
+    realtime_state: Arc<RealtimeState>,
+) {
     let interface_combo: ComboBoxText = builder
         .object("cmb_transport_interface")
         .expect("Could not find cmb_transport_interface");
@@ -204,9 +247,63 @@ fn setup_transport_header(builder: &gtk::Builder) {
         connect_button.set_sensitive(true);
     }
 
-    let active_source: Rc<RefCell<Option<Box<dyn CanFrameSource>>>> = Rc::new(RefCell::new(None));
+    let last_seen_label: Label = builder
+        .object("lbl_last_seen")
+        .expect("Could not find lbl_last_seen");
+    let active_session: Rc<RefCell<Option<RealtimeLoggingSession>>> = Rc::new(RefCell::new(None));
+    let (event_sender, event_receiver) = unbounded::<RealtimeLoggingEvent>();
+
+    glib::timeout_add_local(
+        Duration::from_millis(200),
+        glib::clone!(
+            #[strong]
+            connect_button,
+            #[strong]
+            status_label,
+            #[strong]
+            last_seen_label,
+            #[strong]
+            active_session,
+            move || {
+                for event in event_receiver.try_iter() {
+                    match event {
+                        RealtimeLoggingEvent::Saved {
+                            total_frames,
+                            latest,
+                        } => {
+                            status_label.set_text(&format!("Logging: {total_frames} frames saved"));
+                            last_seen_label
+                                .set_text(&latest.format("%H:%M:%S%.3f UTC").to_string());
+                        }
+                        RealtimeLoggingEvent::Decoded { name, value, unit } => {
+                            status_label.set_text(&format!(
+                                "{name}: {:.1}{}",
+                                value,
+                                unit.map(|unit| format!(" {unit}")).unwrap_or_default()
+                            ));
+                        }
+                        RealtimeLoggingEvent::ReceiveError(error) => {
+                            status_label.set_text(&format!("Receive warning: {error}"));
+                        }
+                        RealtimeLoggingEvent::SaveError(error) => {
+                            status_label.set_text(&format!("Save warning: {error}"));
+                        }
+                        RealtimeLoggingEvent::Stopped => {
+                            active_session.replace(None);
+                            connect_button.set_label("Connect");
+                            status_label.set_text("Disconnected");
+                        }
+                    }
+                }
+
+                glib::ControlFlow::Continue
+            }
+        ),
+    );
 
     connect_button.connect_clicked(glib::clone!(
+        #[strong]
+        connect_button,
         #[strong]
         interface_combo,
         #[strong]
@@ -214,8 +311,23 @@ fn setup_transport_header(builder: &gtk::Builder) {
         #[strong]
         status_label,
         #[strong]
-        active_source,
+        active_session,
+        #[strong]
+        event_sender,
+        #[strong]
+        repository,
+        #[strong]
+        log_database_path,
+        #[strong]
+        realtime_state,
         move |_| {
+            if let Some(session) = active_session.borrow_mut().take() {
+                session.request_stop();
+                connect_button.set_label("Stopping...");
+                status_label.set_text("Disconnecting...");
+                return;
+            }
+
             let Some(interface_path) = interface_combo.active_id().map(|id| id.to_string()) else {
                 status_label.set_text("No interface selected");
                 return;
@@ -224,18 +336,35 @@ fn setup_transport_header(builder: &gtk::Builder) {
                 .active_text()
                 .map(|text| text.to_string())
                 .unwrap_or_else(|| "Unknown interface".to_string());
-            let mode = mode_combo
+            let mode_label = mode_combo
                 .active_text()
                 .map(|text| text.to_string())
                 .unwrap_or_else(|| "Stream".to_string());
+            let mode = connection_mode_from_label(&mode_label);
 
-            match open_transport_source(&interface_path, &mode) {
+            match open_transport_source(&interface_path, mode) {
                 Ok(source) => {
-                    active_source.replace(Some(source));
-                    status_label.set_text(&format!("Connected: {interface_label} / {mode}"));
+                    let signal_kind = signal_kind_for_mode(mode);
+                    let definitions = repository
+                        .as_ref()
+                        .and_then(|repository| repository.list_signal_definitions().ok())
+                        .map(definition_map)
+                        .unwrap_or_default();
+                    let session = spawn_realtime_logging(
+                        source,
+                        signal_kind,
+                        definitions,
+                        log_database_path.clone(),
+                        realtime_state.clone(),
+                        event_sender.clone(),
+                    );
+                    active_session.replace(Some(session));
+                    connect_button.set_label("Disconnect");
+                    status_label.set_text(&format!("Connected: {interface_label} / {mode_label}"));
                 }
                 Err(error) => {
-                    active_source.replace(None);
+                    active_session.replace(None);
+                    connect_button.set_label("Connect");
                     status_label.set_text(&format!("Connection failed: {error}"));
                 }
             }
@@ -245,7 +374,7 @@ fn setup_transport_header(builder: &gtk::Builder) {
 
 fn open_transport_source(
     interface_path: &str,
-    mode: &str,
+    mode: ConnectionMode,
 ) -> anyhow::Result<Box<dyn CanFrameSource>> {
     #[cfg(target_os = "linux")]
     {
@@ -254,6 +383,29 @@ fn open_transport_source(
         }
     }
 
-    let baud_rate = if mode == "OBD-2" { 38_400 } else { 500_000 };
-    Ok(Box::new(SerialCanSource::open(interface_path, baud_rate)?))
+    if mode == ConnectionMode::Obd2 {
+        return Ok(Box::new(SerialCanSource::open_obd2_auto(interface_path)?));
+    }
+
+    let baud_rate = 500_000;
+    Ok(Box::new(SerialCanSource::open_with_mode(
+        interface_path,
+        baud_rate,
+        mode,
+    )?))
+}
+
+fn connection_mode_from_label(label: &str) -> ConnectionMode {
+    if label == "OBD-2" {
+        ConnectionMode::Obd2
+    } else {
+        ConnectionMode::Stream
+    }
+}
+
+fn signal_kind_for_mode(mode: ConnectionMode) -> SignalKind {
+    match mode {
+        ConnectionMode::Obd2 => SignalKind::Pid,
+        ConnectionMode::Stream => SignalKind::CanId,
+    }
 }

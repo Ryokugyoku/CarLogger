@@ -144,6 +144,12 @@
     font-weight: 900;
 }
 
+.priority-metric-value {
+    color: #f8fbfc;
+    font-size: 13pt;
+    font-weight: 800;
+}
+
 .accent-teal {
     border-left: 4px solid #00c28e;
 }
@@ -224,4 +230,48 @@
     font-size: 10pt;
     color: #98a3ad;
     font-style: italic;
+}
+
+.segmented-control {
+    background: #0f1216;
+    border: 1px solid #313a44;
+    border-radius: 8px;
+    padding: 3px;
+}
+
+.segment-button {
+    background: transparent;
+    color: #aab4bd;
+    border: 0;
+    border-radius: 6px;
+    font-weight: 800;
+    min-height: 32px;
+    min-width: 88px;
+    padding: 0 12px;
+}
+
+.segment-button:checked {
+    background: #00c28e;
+    color: #06110d;
+}
+
+.signal-check {
+    background: #15191e;
+    color: #d9e1e6;
+    border: 1px solid #263039;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-weight: 700;
+}
+
+.signal-check:checked {
+    background: #17251f;
+    border-color: #1e7f61;
+    color: #5df2c1;
+}
+
+.chart-canvas {
+    background: #111418;
+    border: 1px solid #263039;
+    border-radius: 8px;
 }
