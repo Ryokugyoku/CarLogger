@@ -220,6 +220,10 @@ pub fn setup_dashboard_refresh(
     let unknown_can_table: Grid = builder
         .object("unknown_can_table")
         .expect("Could not find unknown_can_table");
+    let engine_card: GtkBox = builder
+        .object("engine_card")
+        .expect("Could not find engine_card");
+    let smoothed_rpm = Rc::new(Cell::new(0.0));
 
     glib::timeout_add_local(
         Duration::from_millis(250),
@@ -234,6 +238,10 @@ pub fn setup_dashboard_refresh(
             known_signal_table,
             #[strong]
             unknown_can_table,
+            #[strong]
+            engine_card,
+            #[strong]
+            smoothed_rpm,
             move || {
                 let snapshot = realtime_state
                     .snapshot()
@@ -248,6 +256,7 @@ pub fn setup_dashboard_refresh(
                 update_last_seen_label(&last_seen_label, &snapshot);
                 update_known_signal_table(&known_signal_table, &snapshot);
                 update_unknown_can_table(&unknown_can_table, &snapshot);
+                update_engine_accent(&engine_card, &smoothed_rpm, &snapshot);
 
                 glib::ControlFlow::Continue
             }
@@ -271,6 +280,29 @@ pub fn setup_dashboard_refresh(
             }
         ),
     );
+}
+
+fn update_engine_accent(
+    engine_card: &GtkBox,
+    smoothed_rpm: &Cell<f64>,
+    snapshot: &[RealtimeSignalState],
+) {
+    let target = find_metric(snapshot, &["engine rpm"])
+        .map(|value| value.value.max(0.0))
+        .unwrap_or(0.0);
+    let rpm = smoothed_rpm.get() + (target - smoothed_rpm.get()) * 0.22;
+    smoothed_rpm.set(rpm);
+
+    for class in ["rpm-idle", "rpm-cruise", "rpm-high"] {
+        engine_card.remove_css_class(class);
+    }
+    engine_card.add_css_class(if rpm >= 4_500.0 {
+        "rpm-high"
+    } else if rpm >= 2_000.0 {
+        "rpm-cruise"
+    } else {
+        "rpm-idle"
+    });
 }
 
 fn create_ratio_chart(

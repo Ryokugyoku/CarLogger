@@ -14,7 +14,7 @@
           <object class="GtkBox" id="sidebar_container"/>
         </child>
         <child>
-          <object class="GtkBox">
+          <object class="GtkBox" id="main_surface">
             <property name="orientation">vertical</property>
             <property name="hexpand">true</property>
             <property name="vexpand">true</property>

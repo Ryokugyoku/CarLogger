@@ -3,8 +3,29 @@
 }
 
 .main-surface {
-    background: #15171b;
+    background: radial-gradient(circle farthest-corner at 16% 12%, rgba(20, 91, 91, 0.16), transparent 38%),
+                radial-gradient(circle farthest-corner at 86% 84%, rgba(45, 55, 105, 0.13), transparent 42%),
+                #15171b;
     color: #f4f7f8;
+    transition: background 3200ms ease-in-out;
+}
+
+.main-surface.ambient-phase-1 {
+    background: radial-gradient(circle farthest-corner at 44% 8%, rgba(20, 91, 91, 0.15), transparent 40%),
+                radial-gradient(circle farthest-corner at 94% 55%, rgba(45, 55, 105, 0.14), transparent 43%),
+                #15171b;
+}
+
+.main-surface.ambient-phase-2 {
+    background: radial-gradient(circle farthest-corner at 82% 24%, rgba(20, 91, 91, 0.14), transparent 41%),
+                radial-gradient(circle farthest-corner at 62% 92%, rgba(45, 55, 105, 0.13), transparent 44%),
+                #15171b;
+}
+
+.main-surface.ambient-phase-3 {
+    background: radial-gradient(circle farthest-corner at 62% 82%, rgba(20, 91, 91, 0.15), transparent 42%),
+                radial-gradient(circle farthest-corner at 12% 66%, rgba(45, 55, 105, 0.14), transparent 42%),
+                #15171b;
 }
 
 .side-bar {
@@ -157,8 +178,22 @@
 }
 
 .engine-card {
-    background: linear-gradient(135deg, #1c2427, #171c21);
+    background: radial-gradient(circle farthest-corner at 24% 58%, rgba(0, 194, 142, 0.09), transparent 44%),
+                linear-gradient(135deg, #1c2427, #171c21);
     border-top: 2px solid #00c28e;
+    transition: background 1400ms ease-in-out, border-color 1400ms ease-in-out;
+}
+
+.engine-card.rpm-cruise {
+    background: radial-gradient(circle farthest-corner at 34% 56%, rgba(68, 187, 205, 0.13), transparent 46%),
+                linear-gradient(135deg, #1c2427, #171c21);
+    border-top-color: #38b7b9;
+}
+
+.engine-card.rpm-high {
+    background: radial-gradient(circle farthest-corner at 45% 54%, rgba(126, 128, 219, 0.15), transparent 48%),
+                linear-gradient(135deg, #202329, #191b21);
+    border-top-color: #7d91d2;
 }
 
 .temperature-card {

@@ -155,6 +155,10 @@ fn build_ui(
     let dashboard_container: GtkBox = builder
         .object("dashboard_container")
         .expect("Could not find dashboard_container");
+    let main_surface: GtkBox = builder
+        .object("main_surface")
+        .expect("Could not find main_surface");
+    setup_ambient_background(&main_surface);
     let realtime_state = Arc::new(RealtimeState::new());
     setup_transport_header(
         &builder,
@@ -212,6 +216,32 @@ fn build_ui(
     translation_manager.borrow().update_all();
 
     window.present();
+}
+
+fn setup_ambient_background(surface: &GtkBox) {
+    let phase = Rc::new(std::cell::Cell::new(0_usize));
+    glib::timeout_add_local(
+        Duration::from_millis(3600),
+        glib::clone!(
+            #[strong]
+            surface,
+            #[strong]
+            phase,
+            move || {
+                const CLASSES: [&str; 3] =
+                    ["ambient-phase-1", "ambient-phase-2", "ambient-phase-3"];
+                for class in CLASSES {
+                    surface.remove_css_class(class);
+                }
+                let next = (phase.get() + 1) % 4;
+                phase.set(next);
+                if next > 0 {
+                    surface.add_css_class(CLASSES[next - 1]);
+                }
+                glib::ControlFlow::Continue
+            }
+        ),
+    );
 }
 
 fn setup_transport_header(
