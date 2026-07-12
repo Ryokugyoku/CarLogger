@@ -1,0 +1,14 @@
+[project]
+name = "car-logger-ai-worker"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["tensorflow>=2.15"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

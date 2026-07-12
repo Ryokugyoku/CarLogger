@@ -380,6 +380,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "car-logger-ai-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "uuid",
+]
+
+[[package]]
 name = "car-logger-application"
 version = "0.1.0"
 dependencies = [
@@ -454,6 +466,7 @@ dependencies = [
  "anyhow",
  "car-logger-application",
  "car-logger-domain",
+ "chrono",
  "embedded-can",
  "serde",
  "serde_json",

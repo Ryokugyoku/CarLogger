@@ -4,6 +4,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub mod ai_features;
+
 pub const ALGORITHM_VERSION: &str = "health-relative-v1";
 pub const FEATURE_SCHEMA_VERSION: &str = "normalized-signals-v1";
 

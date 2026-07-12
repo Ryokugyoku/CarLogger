@@ -6,7 +6,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use car_logger_application::CanFrameSource;
+use car_logger_application::{
+    CanFrameSource, DiagnosticObservation, DiagnosticQuality, DtcReading,
+};
 use car_logger_domain::CanFrame;
 use serialport::{
     ClearBuffer, DataBits, FlowControl, Parity, SerialPort, SerialPortType, StopBits,
@@ -21,6 +23,62 @@ pub struct SerialCanSource {
     obd_poll_plan: Vec<Vec<u8>>,
     obd_poll_plan_index: usize,
     obd_multi_pid_enabled: bool,
+    diagnostic: DiagnosticScheduler,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DiagnosticPollingConfig {
+    pub interval: Duration,
+    pub normal_requests_between_diagnostics: u8,
+    pub request_timeout: Duration,
+}
+
+impl Default for DiagnosticPollingConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(5 * 60),
+            normal_requests_between_diagnostics: 4,
+            request_timeout: Duration::from_millis(2_500),
+        }
+    }
+}
+
+struct DiagnosticScheduler {
+    config: DiagnosticPollingConfig,
+    next_due: Instant,
+    normal_requests: u8,
+    stage: u8,
+    status: Option<(bool, u8)>,
+    unsupported: bool,
+    pending: VecDeque<DiagnosticObservation>,
+}
+
+impl DiagnosticScheduler {
+    fn new(config: DiagnosticPollingConfig) -> Self {
+        Self {
+            config,
+            next_due: Instant::now(),
+            normal_requests: 0,
+            stage: 0,
+            status: None,
+            unsupported: false,
+            pending: VecDeque::new(),
+        }
+    }
+
+    fn note_normal_request(&mut self) {
+        self.normal_requests = self.normal_requests.saturating_add(1);
+    }
+
+    fn ready(&self) -> bool {
+        !self.unsupported
+            && Instant::now() >= self.next_due
+            && self.normal_requests >= self.config.normal_requests_between_diagnostics
+    }
+
+    fn consume_turn(&mut self) {
+        self.normal_requests = 0;
+    }
 }
 
 const DASHBOARD_OBD_PIDS: &[u8] = &[0x0C, 0x0D, 0x05, 0x11];
@@ -115,6 +173,7 @@ impl SerialCanSource {
             obd_poll_plan: Vec::new(),
             obd_poll_plan_index: 0,
             obd_multi_pid_enabled: true,
+            diagnostic: DiagnosticScheduler::new(DiagnosticPollingConfig::default()),
         })
     }
 
@@ -136,6 +195,7 @@ impl CanFrameSource for SerialCanSource {
 
             if self.parser.mode == ConnectionMode::Obd2 {
                 self.poll_next_obd_group()?;
+                self.maybe_poll_diagnostics();
                 continue;
             }
 
@@ -146,6 +206,36 @@ impl CanFrameSource for SerialCanSource {
                 .context("シリアルデータの読み取りに失敗しました")?;
             self.parser.push_bytes(&buffer[..read_size]);
         }
+    }
+
+    fn take_diagnostic_observation(&mut self) -> Option<DiagnosticObservation> {
+        self.diagnostic.pending.pop_front()
+    }
+
+    fn final_diagnostic_observation(&mut self) -> Option<DiagnosticObservation> {
+        if self.parser.mode != ConnectionMode::Obd2 || self.diagnostic.unsupported {
+            return None;
+        }
+        let status_response = self.send_diagnostic_command("0101");
+        let status = parse_monitor_status(&status_response);
+        let dtc_response = self.send_diagnostic_command("03");
+        let dtcs = parse_mode_03_dtcs(&dtc_response);
+        let (mil_on, count) = status.as_ref().copied().unwrap_or((false, 0));
+        let error = status.err().or_else(|| dtcs.as_ref().err().cloned());
+        Some(DiagnosticObservation {
+            observed_at: chrono::Utc::now(),
+            mil_on: error.is_none().then_some(mil_on),
+            reported_dtc_count: error.is_none().then_some(count),
+            dtcs: dtcs.unwrap_or_default(),
+            source_service: "obd2_session_end".into(),
+            quality: if error.is_some() {
+                DiagnosticQuality::Failed
+            } else {
+                DiagnosticQuality::Complete
+            },
+            error,
+            session_id: None,
+        })
     }
 }
 
@@ -169,6 +259,7 @@ impl SerialCanSource {
         let command = format_obd_request(&pids);
         write_elm327_command(&mut self.port, &command)?;
         let response = read_elm327_response(&mut self.port, Duration::from_millis(2_500));
+        self.diagnostic.note_normal_request();
         tracing::debug!(
             pids = %format_pid_list(&pids),
             response,
@@ -210,6 +301,66 @@ impl SerialCanSource {
             );
         }
         Ok(())
+    }
+
+    fn maybe_poll_diagnostics(&mut self) {
+        if !self.diagnostic.ready() {
+            return;
+        }
+        self.diagnostic.consume_turn();
+        if self.diagnostic.stage == 0 {
+            let response = self.send_diagnostic_command("0101");
+            match parse_monitor_status(&response) {
+                Ok(status) => {
+                    self.diagnostic.status = Some(status);
+                    self.diagnostic.stage = 1;
+                }
+                Err(error) => self.finish_diagnostic(Vec::new(), error),
+            }
+        } else {
+            let response = self.send_diagnostic_command("03");
+            match parse_mode_03_dtcs(&response) {
+                Ok(dtcs) => self.finish_diagnostic(dtcs, String::new()),
+                Err(error) => self.finish_diagnostic(Vec::new(), error),
+            }
+        }
+    }
+
+    fn send_diagnostic_command(&mut self, command: &str) -> String {
+        if write_elm327_command(&mut self.port, command).is_err() {
+            return "write failed".into();
+        }
+        read_elm327_response(&mut self.port, self.diagnostic.config.request_timeout)
+    }
+
+    fn finish_diagnostic(&mut self, dtcs: Vec<DtcReading>, error: String) {
+        let no_data = error.eq_ignore_ascii_case("NO DATA");
+        if no_data {
+            self.diagnostic.unsupported = true;
+        }
+        let (mil_on, count) = self.diagnostic.status.unwrap_or((false, 0));
+        let failed = !error.is_empty();
+        self.diagnostic.pending.push_back(DiagnosticObservation {
+            observed_at: chrono::Utc::now(),
+            mil_on: self.diagnostic.status.map(|status| status.0),
+            reported_dtc_count: self.diagnostic.status.map(|status| status.1),
+            dtcs,
+            source_service: "obd2_mode_01_01_and_03".into(),
+            quality: if no_data {
+                DiagnosticQuality::Unsupported
+            } else if failed {
+                DiagnosticQuality::Failed
+            } else if usize::from(count) == 0 || mil_on || count > 0 {
+                DiagnosticQuality::Complete
+            } else {
+                DiagnosticQuality::Partial
+            },
+            error: failed.then_some(error),
+            session_id: None,
+        });
+        self.diagnostic.status = None;
+        self.diagnostic.stage = 0;
+        self.diagnostic.next_due = Instant::now() + self.diagnostic.config.interval;
     }
 
     fn configure_obd_poll_pids(&mut self) -> Result<()> {
@@ -691,6 +842,68 @@ fn elm327_hex_bytes(line: &str) -> Vec<u8> {
         .collect()
 }
 
+pub fn parse_monitor_status(response: &str) -> std::result::Result<(bool, u8), String> {
+    if is_elm327_no_data_response(response) {
+        return Err("NO DATA".into());
+    }
+    for line in elm327_response_lines(response) {
+        let bytes = elm327_hex_bytes(line);
+        if let Some(position) = bytes.windows(2).position(|pair| pair == [0x41, 0x01]) {
+            let Some(status) = bytes.get(position + 2) else {
+                return Err("incomplete Mode 01 PID 01 response".into());
+            };
+            return Ok((status & 0x80 != 0, status & 0x7f));
+        }
+    }
+    Err("Mode 01 PID 01 response could not be parsed".into())
+}
+
+pub fn parse_mode_03_dtcs(response: &str) -> std::result::Result<Vec<DtcReading>, String> {
+    if is_elm327_no_data_response(response) {
+        return Err("NO DATA".into());
+    }
+    let mut result = Vec::new();
+    let mut found = false;
+    for line in elm327_response_lines(response) {
+        let ecu = line
+            .split_whitespace()
+            .next()
+            .filter(|token| token.len() == 3 && token.chars().all(|c| c.is_ascii_hexdigit()))
+            .map(str::to_owned);
+        let bytes = elm327_hex_bytes(line);
+        let Some(service) = bytes.iter().position(|byte| *byte == 0x43) else {
+            continue;
+        };
+        found = true;
+        let payload = &bytes[service + 1..];
+        if !payload.len().is_multiple_of(2) {
+            return Err("incomplete Mode 03 response".into());
+        }
+        for pair in payload.chunks_exact(2) {
+            if pair == [0, 0] {
+                continue;
+            }
+            let family = ['P', 'C', 'B', 'U'][usize::from(pair[0] >> 6)];
+            result.push(DtcReading {
+                code: format!(
+                    "{family}{:X}{:X}{:02X}",
+                    (pair[0] >> 4) & 0x03,
+                    pair[0] & 0x0f,
+                    pair[1]
+                ),
+                ecu: ecu.clone(),
+            });
+        }
+    }
+    if found {
+        result.sort_by(|a, b| (&a.code, &a.ecu).cmp(&(&b.code, &b.ecu)));
+        result.dedup();
+        Ok(result)
+    } else {
+        Err("Mode 03 response could not be parsed".into())
+    }
+}
+
 fn parse_asc_stream_frame(line: &str) -> Option<CanFrame> {
     let parts = line.split_whitespace().collect::<Vec<_>>();
     let data_marker_index = parts
@@ -834,6 +1047,61 @@ mod tests {
         assert!(is_elm327_no_data_response("no data\r>"));
         assert!(!is_elm327_no_data_response("41 2F 80\r>"));
         assert!(!is_elm327_no_data_response("CAN ERROR\r>"));
+    }
+
+    #[test]
+    fn parses_monitor_status_mil_and_count() {
+        assert_eq!(
+            parse_monitor_status("41 01 82 07 E0 00").unwrap(),
+            (true, 2)
+        );
+        assert_eq!(
+            parse_monitor_status("7E8 06 41 01 00 00 00 00").unwrap(),
+            (false, 0)
+        );
+        assert!(parse_monitor_status("41 01").is_err());
+        assert_eq!(parse_monitor_status("NO DATA"), Err("NO DATA".into()));
+    }
+
+    #[test]
+    fn parses_mode_03_single_multiple_and_families() {
+        let single = parse_mode_03_dtcs("43 01 33 00 00").unwrap();
+        assert_eq!(single[0].code, "P0133");
+        let all = parse_mode_03_dtcs("7E8 09 43 01 33 41 23 81 AB C1 01").unwrap();
+        assert_eq!(
+            all.iter().map(|d| d.code.as_str()).collect::<Vec<_>>(),
+            vec!["B01AB", "C0123", "P0133", "U0101"]
+        );
+    }
+
+    #[test]
+    fn parses_mode_03_empty_and_rejects_incomplete() {
+        assert!(parse_mode_03_dtcs("43 00 00 00 00").unwrap().is_empty());
+        assert!(parse_mode_03_dtcs("43 01").is_err());
+        assert_eq!(parse_mode_03_dtcs("NO DATA"), Err("NO DATA".into()));
+    }
+
+    #[test]
+    fn diagnostics_are_low_priority_and_failure_does_not_disable_normal_polling() {
+        let mut scheduler = DiagnosticScheduler::new(DiagnosticPollingConfig {
+            interval: Duration::ZERO,
+            normal_requests_between_diagnostics: 2,
+            request_timeout: Duration::from_millis(1),
+        });
+        assert!(!scheduler.ready());
+        scheduler.note_normal_request();
+        assert!(!scheduler.ready());
+        scheduler.note_normal_request();
+        assert!(scheduler.ready());
+        scheduler.consume_turn();
+        // A diagnostic timeout/parse failure does not touch the normal request
+        // counter or poll plan; another two normal turns must happen first.
+        assert!(!scheduler.ready());
+        scheduler.note_normal_request();
+        scheduler.note_normal_request();
+        assert!(scheduler.ready());
+        scheduler.unsupported = true;
+        assert!(!scheduler.ready());
     }
 
     #[test]

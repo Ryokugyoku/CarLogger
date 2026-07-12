@@ -6,7 +6,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use car_logger_application::CanFrameSource;
+use car_logger_application::{CanFrameSource, DiagnosticRepository};
 use car_logger_domain::{CanFrame, RealtimeState, SignalKind};
 use car_logger_storage::DuckdbCanFrameRepository;
 use crossbeam_channel::Sender;
@@ -121,6 +121,13 @@ fn run_realtime_logging(
                     realtime_state.upsert_unknown(frame.clone());
                 }
                 buffer.push(frame);
+                while let Some(observation) = source.take_diagnostic_observation() {
+                    if let Err(error) = repository.record_diagnostic(&observation) {
+                        let _ = events.send(RealtimeLoggingEvent::SaveError(format!(
+                            "Diagnostic observation was not saved: {error}"
+                        )));
+                    }
+                }
 
                 if buffer.len() >= SAVE_BATCH_SIZE || last_flush.elapsed() >= FLUSH_INTERVAL {
                     flush_buffer(
@@ -151,6 +158,13 @@ fn run_realtime_logging(
         }
     }
 
+    if let Some(observation) = source.final_diagnostic_observation()
+        && let Err(error) = repository.record_diagnostic(&observation)
+    {
+        let _ = events.send(RealtimeLoggingEvent::SaveError(format!(
+            "Final diagnostic observation was not saved: {error}"
+        )));
+    }
     flush_buffer(
         &mut repository,
         signal_kind,

@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: car-logger-ai-worker
+Version: 0.1.0
+Requires-Python: >=3.10
+Requires-Dist: tensorflow>=2.15
+Provides-Extra: dev
+Requires-Dist: pytest>=8; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
