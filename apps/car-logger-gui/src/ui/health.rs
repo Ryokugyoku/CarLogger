@@ -5,8 +5,8 @@ use std::thread;
 use std::time::Duration;
 
 use car_logger_application::{
-    HealthDashboardData, HealthService, ScoreGranularity, ScoreStatus, StoredComponent,
-    StoredHealthScore,
+    DiagnosticDashboardData, DiagnosticRepository, HealthDashboardData, HealthService,
+    ScoreGranularity, ScoreStatus, StoredComponent, StoredHealthScore,
 };
 use car_logger_storage::DuckdbCanFrameRepository;
 use chrono::{DateTime, Local, TimeDelta, Utc};
@@ -25,8 +25,14 @@ const RECALCULATE_CHUNK_SIZE: usize = 20_000;
 
 #[derive(Debug, Clone)]
 enum WorkerEvent {
-    Loaded(u64, Box<Result<HealthDashboardData, String>>),
+    Loaded(u64, Box<Result<DashboardData, String>>),
     Recalculated(Result<(), String>),
+}
+
+#[derive(Debug, Clone)]
+struct DashboardData {
+    health: HealthDashboardData,
+    diagnostics: DiagnosticDashboardData,
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +135,7 @@ struct Widgets {
     recalculate: Button,
     recalculate_result: Label,
     error: Label,
+    diagnostics: Label,
 }
 
 pub struct HealthView {
@@ -274,6 +281,17 @@ fn build_widgets(tm: &Rc<RefCell<TranslationManager>>) -> Widgets {
     summary.append(&summary_text);
     page.append(&summary);
 
+    let diagnostic_panel = GtkBox::new(Orientation::Vertical, 8);
+    diagnostic_panel.add_css_class("panel");
+    diagnostic_panel.append(&label(
+        "Diagnostics (separate from health score)",
+        "section-title",
+    ));
+    let diagnostics = label("No diagnostic observation yet", "health-diagnostics");
+    diagnostics.set_wrap(true);
+    diagnostic_panel.append(&diagnostics);
+    page.append(&diagnostic_panel);
+
     let chart_panel = GtkBox::new(Orientation::Vertical, 8);
     chart_panel.add_css_class("panel");
     chart_panel.append(&label(&translate("Score trend"), "section-title"));
@@ -351,6 +369,7 @@ fn build_widgets(tm: &Rc<RefCell<TranslationManager>>) -> Widgets {
         recalculate,
         recalculate_result,
         error,
+        diagnostics,
     }
 }
 
@@ -437,10 +456,21 @@ fn request_load(path: &Path, selection: &Selection, sender: Sender<WorkerEvent>)
     let granularity = selection.granularity;
     let (start, end) = selection.range();
     thread::spawn(move || {
-        let result = DuckdbCanFrameRepository::open_read_only(path)
-            .map(HealthService::new)
-            .and_then(|service| service.dashboard(granularity, start, end, MAX_GRAPH_POINTS))
-            .map_err(|error| error.to_string());
+        let result = (|| {
+            let repository = DuckdbCanFrameRepository::open_read_only(path)?;
+            let diagnostics = repository.diagnostic_dashboard(100)?;
+            let health = HealthService::new(repository).dashboard(
+                granularity,
+                start,
+                end,
+                MAX_GRAPH_POINTS,
+            )?;
+            Ok(DashboardData {
+                health,
+                diagnostics,
+            })
+        })()
+        .map_err(|error: anyhow::Error| error.to_string());
         let _ = sender.send(WorkerEvent::Loaded(generation, Box::new(result)));
     });
 }
@@ -503,8 +533,9 @@ fn poll_worker(
                 WorkerEvent::Loaded(generation, data) if selection.borrow().accepts(generation) => {
                     match *data {
                         Ok(data) => {
-                            render(&widgets, &data);
-                            *series.borrow_mut() = data.series;
+                            render(&widgets, &data.health);
+                            render_diagnostics(&widgets.diagnostics, &data.diagnostics);
+                            *series.borrow_mut() = data.health.series;
                             widgets.chart.queue_draw();
                         }
                         Err(error) => {
@@ -546,6 +577,76 @@ fn poll_worker(
         }
         glib::ControlFlow::Continue
     });
+}
+
+fn render_diagnostics(label: &Label, data: &DiagnosticDashboardData) {
+    let support = match data.supported {
+        Some(false) => "DTC acquisition is not supported by this ECU/adapter".to_string(),
+        None if data.last_observed_at.is_none() => "No diagnostic observation yet".to_string(),
+        _ => format!(
+            "MIL: {} · Active DTCs: {}",
+            data.mil_on
+                .map_or("unknown", |on| if on { "ON" } else { "OFF" }),
+            data.active.len()
+        ),
+    };
+    let active = data
+        .active
+        .iter()
+        .map(|dtc| {
+            format!(
+                "{} · active · first {} · last {}",
+                dtc.code,
+                dtc.first_detected_at
+                    .with_timezone(&Local)
+                    .format("%Y-%m-%d %H:%M"),
+                dtc.last_detected_at
+                    .with_timezone(&Local)
+                    .format("%Y-%m-%d %H:%M")
+            )
+        })
+        .collect::<Vec<_>>();
+    let history = data
+        .history
+        .iter()
+        .filter(|dtc| !dtc.active)
+        .take(10)
+        .map(|dtc| {
+            format!(
+                "{} · cleared {} · occurrence {}",
+                dtc.code,
+                dtc.cleared_at
+                    .map(|at| at
+                        .with_timezone(&Local)
+                        .format("%Y-%m-%d %H:%M")
+                        .to_string())
+                    .unwrap_or_else(|| "unknown".into()),
+                dtc.occurrence
+            )
+        })
+        .collect::<Vec<_>>();
+    let last = data.last_observed_at.map(|at| {
+        format!(
+            "Last acquisition: {}",
+            at.with_timezone(&Local).format("%Y-%m-%d %H:%M")
+        )
+    });
+    let error = data
+        .last_error
+        .as_ref()
+        .map(|error| format!("Last acquisition failed (logging continues): {error}"));
+    let mut lines = vec![
+        support,
+        "DTC absence does not prove that the vehicle has no fault.".into(),
+    ];
+    lines.extend(last);
+    lines.extend(error);
+    lines.extend(active);
+    if !history.is_empty() {
+        lines.push("History:".into());
+        lines.extend(history);
+    }
+    label.set_text(&lines.join("\n"));
 }
 
 fn render(w: &Widgets, data: &HealthDashboardData) {

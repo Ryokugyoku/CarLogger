@@ -454,6 +454,7 @@ dependencies = [
  "anyhow",
  "car-logger-application",
  "car-logger-domain",
+ "chrono",
  "embedded-can",
  "serde",
  "serde_json",

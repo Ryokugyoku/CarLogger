@@ -13,6 +13,200 @@ pub use car_logger_health::{ScoreDomain, ScoreReason};
 /// - SocketCanSource
 pub trait CanFrameSource: Send {
     fn receive(&mut self) -> Result<CanFrame>;
+
+    /// Returns a completed low-priority diagnostic observation, when available.
+    /// Sources which do not support request/response OBD-II simply return None.
+    fn take_diagnostic_observation(&mut self) -> Option<DiagnosticObservation> {
+        None
+    }
+
+    /// Best-effort final observation. Errors are represented in the returned
+    /// value and must never turn session shutdown into a logging failure.
+    fn final_diagnostic_observation(&mut self) -> Option<DiagnosticObservation> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DtcReading {
+    pub code: String,
+    pub ecu: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticQuality {
+    Complete,
+    Partial,
+    Unsupported,
+    Failed,
+}
+
+impl DiagnosticQuality {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::Unsupported => "unsupported",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagnosticObservation {
+    pub observed_at: DateTime<Utc>,
+    pub mil_on: Option<bool>,
+    pub reported_dtc_count: Option<u8>,
+    pub dtcs: Vec<DtcReading>,
+    pub source_service: String,
+    pub quality: DiagnosticQuality,
+    pub error: Option<String>,
+    pub session_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StoredDtc {
+    pub id: i64,
+    pub code: String,
+    pub ecu: Option<String>,
+    pub first_detected_at: DateTime<Utc>,
+    pub last_detected_at: DateTime<Utc>,
+    pub active: bool,
+    pub cleared_at: Option<DateTime<Utc>>,
+    pub occurrence: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DiagnosticDashboardData {
+    pub mil_on: Option<bool>,
+    pub active: Vec<StoredDtc>,
+    pub history: Vec<StoredDtc>,
+    pub supported: Option<bool>,
+    pub last_observed_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+}
+
+pub trait DiagnosticRepository {
+    fn record_diagnostic(&mut self, observation: &DiagnosticObservation) -> Result<()>;
+    fn diagnostic_dashboard(&self, history_limit: usize) -> Result<DiagnosticDashboardData>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackKind {
+    NoProblem,
+    Watch,
+    Inspected,
+    FaultConfirmed,
+    MaintenancePerformed,
+    FalsePositive,
+}
+
+impl FeedbackKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoProblem => "no_problem",
+            Self::Watch => "watch",
+            Self::Inspected => "inspected",
+            Self::FaultConfirmed => "fault_confirmed",
+            Self::MaintenancePerformed => "maintenance_performed",
+            Self::FalsePositive => "false_positive",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserFeedback {
+    pub id: Option<i64>,
+    pub kind: FeedbackKind,
+    pub note: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub session_id: Option<i64>,
+    pub period_score_id: Option<i64>,
+    pub score_reason_id: Option<i64>,
+    pub dtc_event_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LearningFeature {
+    pub session_id: Option<i64>,
+    pub period_score_id: Option<i64>,
+    pub at: DateTime<Utc>,
+    pub driving_state: String,
+    pub key: String,
+    pub value: f64,
+    pub schema_version: String,
+    pub quality: f64,
+    pub statistical_anomaly: bool,
+    pub baseline_accepted: bool,
+    pub score_engine: String,
+    pub engine_version: String,
+    pub temporally_related_dtc: bool,
+}
+
+pub trait LearningDataRepository {
+    fn save_learning_feature(&mut self, feature: &LearningFeature) -> Result<i64>;
+    fn save_feedback(&mut self, feedback: &UserFeedback) -> Result<i64>;
+    fn feedback(&self, session_id: Option<i64>) -> Result<Vec<UserFeedback>>;
+    fn export_learning_jsonl(&self) -> Result<String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EngineInput {
+    pub feature_schema_version: String,
+    pub features: Vec<LearningFeature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EngineOutput {
+    pub score: Option<f64>,
+    pub confidence: f64,
+    pub reasons: Vec<String>,
+}
+
+pub trait ScoreEngine: Send + Sync {
+    fn name(&self) -> &str;
+    fn version(&self) -> &str;
+    fn required_feature_schema_version(&self) -> &str;
+    fn infer(&self, input: &EngineInput) -> Result<EngineOutput>;
+}
+
+/// Explicit model boundary: incompatible or failing optional engines never
+/// prevent the built-in statistical engine from producing its result.
+pub fn infer_with_fallback(
+    preferred: &dyn ScoreEngine,
+    statistical: &dyn ScoreEngine,
+    input: &EngineInput,
+) -> Result<(EngineOutput, String, String, Option<String>)> {
+    if preferred.required_feature_schema_version() == input.feature_schema_version {
+        match preferred.infer(input) {
+            Ok(output) => {
+                return Ok((
+                    output,
+                    preferred.name().into(),
+                    preferred.version().into(),
+                    None,
+                ));
+            }
+            Err(error) => {
+                let fallback = statistical.infer(input)?;
+                return Ok((
+                    fallback,
+                    statistical.name().into(),
+                    statistical.version().into(),
+                    Some(error.to_string()),
+                ));
+            }
+        }
+    }
+    let fallback = statistical.infer(input)?;
+    Ok((
+        fallback,
+        statistical.name().into(),
+        statistical.version().into(),
+        Some("feature schema is incompatible".into()),
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -225,5 +419,67 @@ pub trait CanFrameRepository: Send {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Engine {
+        name: &'static str,
+        schema: &'static str,
+        fails: bool,
+    }
+    impl ScoreEngine for Engine {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn version(&self) -> &str {
+            "v1"
+        }
+        fn required_feature_schema_version(&self) -> &str {
+            self.schema
+        }
+        fn infer(&self, _input: &EngineInput) -> Result<EngineOutput> {
+            if self.fails {
+                anyhow::bail!("inference failed")
+            }
+            Ok(EngineOutput {
+                score: Some(91.0),
+                confidence: 80.0,
+                reasons: vec![],
+            })
+        }
+    }
+
+    #[test]
+    fn failing_or_incompatible_model_falls_back_to_statistics() {
+        let input = EngineInput {
+            feature_schema_version: "schema-v1".into(),
+            features: vec![],
+        };
+        let statistical = Engine {
+            name: "statistical",
+            schema: "schema-v1",
+            fails: false,
+        };
+        for preferred in [
+            Engine {
+                name: "onnx",
+                schema: "schema-v1",
+                fails: true,
+            },
+            Engine {
+                name: "tensorflow",
+                schema: "schema-v2",
+                fails: false,
+            },
+        ] {
+            let (_, engine, _, warning) =
+                infer_with_fallback(&preferred, &statistical, &input).unwrap();
+            assert_eq!(engine, "statistical");
+            assert!(warning.is_some());
+        }
     }
 }

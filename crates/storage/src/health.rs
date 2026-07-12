@@ -63,7 +63,7 @@ impl DuckdbCanFrameRepository {
         let id:i64=self.connection().query_row("SELECT id FROM driving_sessions WHERE started_at=?1 AND ended_at=?2 AND algorithm_version=?3",params![session.started_at.to_rfc3339(),session.ended_at.to_rfc3339(),ALGORITHM_VERSION],|r|r.get(0))?;
         for f in features(samples) {
             self.connection().execute(
-                "INSERT OR IGNORE INTO health_session_features VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                "INSERT OR IGNORE INTO health_session_features(session_id,signal_key,driving_state,mean,deviation,sample_count,duration_seconds,feature_schema_version) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
                 params![
                     id,
                     f.key.as_str(),
