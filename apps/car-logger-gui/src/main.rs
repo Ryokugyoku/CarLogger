@@ -5,6 +5,7 @@ mod localization;
 mod realtime_logging;
 mod signal_decoder;
 mod ui;
+mod updater;
 
 use crate::dashboard::create_dashboard;
 use crate::live_dashboard::setup_dashboard_refresh;
@@ -35,6 +36,7 @@ use gtk::{
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -203,6 +205,7 @@ fn build_ui(
     setup_ambient_background(&main_surface);
     let realtime_state = Arc::new(RealtimeState::new());
     let is_connected = Arc::new(AtomicBool::new(false));
+    let (update_sender, update_receiver) = mpsc::channel::<updater::UpdateEvent>();
     setup_transport_header(
         &builder,
         &window,
@@ -229,7 +232,7 @@ fn build_ui(
         realtime_state,
         translation_manager.clone(),
         config::log_database_path(&database_path),
-        is_connected,
+        is_connected.clone(),
     );
     if let Some(lbl) = builder.object::<Label>("lbl_logs_title") {
         translation_manager.borrow_mut().add(lbl, "Log Analysis");
@@ -240,7 +243,11 @@ fn build_ui(
 
     // サイドバーの読み込み
     let sidebar_builder = gtk::Builder::from_resource("/com/carlogger/CarLogger/ui/sidebar.ui");
-    let sidebar = Sidebar::setup(&sidebar_builder, main_stack, translation_manager.clone());
+    let sidebar = Sidebar::setup(
+        &sidebar_builder,
+        main_stack.clone(),
+        translation_manager.clone(),
+    );
     sidebar_container.append(sidebar.widget());
 
     // CAN ID管理画面の読み込み
@@ -269,13 +276,249 @@ fn build_ui(
     // 設定画面の読み込み
     let settings_builder =
         gtk::Builder::from_resource("/com/carlogger/CarLogger/ui/settings_view.ui");
-    let settings_view =
-        SettingsView::setup(&settings_builder, translation_manager.clone(), repository);
+    let settings_view = SettingsView::setup(
+        &settings_builder,
+        translation_manager.clone(),
+        repository.clone(),
+        update_sender.clone(),
+    );
     settings_container.append(settings_view.widget());
+
+    setup_updater_ui(
+        &builder,
+        &window,
+        &main_stack,
+        database_path,
+        is_connected,
+        update_sender,
+        update_receiver,
+    );
 
     translation_manager.borrow().update_all();
 
     window.present();
+}
+
+fn setup_updater_ui(
+    builder: &gtk::Builder,
+    window: &ApplicationWindow,
+    main_stack: &Stack,
+    database_path: PathBuf,
+    important_work: Arc<AtomicBool>,
+    sender: mpsc::Sender<updater::UpdateEvent>,
+    receiver: mpsc::Receiver<updater::UpdateEvent>,
+) {
+    let header: GtkBox = builder
+        .object("transport_header")
+        .expect("Could not find transport_header");
+    let indicator = Button::with_label("更新確認中");
+    indicator.add_css_class("update-indicator");
+    indicator.set_tooltip_text(Some("更新の詳細を表示"));
+    header.append(&indicator);
+
+    let last_event = Rc::new(RefCell::new(None::<updater::UpdateEvent>));
+    indicator.connect_clicked(glib::clone!(
+        #[weak]
+        window,
+        #[strong]
+        last_event,
+        move |_| {
+            let event = last_event.borrow();
+            let (target, phase, notes) = event
+                .as_ref()
+                .map(|e| {
+                    (
+                        e.target_version.as_deref().unwrap_or("—"),
+                        update_phase_label(&e.phase),
+                        e.notes.as_deref().unwrap_or("リリースノートはありません"),
+                    )
+                })
+                .unwrap_or(("—", "待機中".into(), "更新情報はまだありません"));
+            let dialog = MessageDialog::builder()
+                .transient_for(&window)
+                .modal(true)
+                .message_type(gtk::MessageType::Info)
+                .text(format!(
+                    "APEX//TRACE {} → {target}",
+                    updater::current_version()
+                ))
+                .secondary_text(format!("状態: {phase}\n\n{notes}"))
+                .buttons(gtk::ButtonsType::Close)
+                .build();
+            dialog.connect_response(|dialog, _| dialog.close());
+            dialog.present();
+        }
+    ));
+
+    let countdown = Rc::new(Cell::new(None::<u8>));
+    let countdown_ticks = Rc::new(Cell::new(0_u8));
+    let restart_dialog = Rc::new(RefCell::new(None::<Dialog>));
+    glib::timeout_add_local(
+        Duration::from_millis(200),
+        glib::clone!(
+            #[strong]
+            window,
+            #[strong]
+            indicator,
+            #[strong]
+            last_event,
+            #[strong]
+            important_work,
+            #[strong]
+            countdown,
+            #[strong]
+            countdown_ticks,
+            #[strong]
+            restart_dialog,
+            #[strong]
+            main_stack,
+            #[strong]
+            database_path,
+            move || {
+                while let Ok(event) = receiver.try_recv() {
+                    indicator.set_sensitive(true);
+                    indicator.set_label(&update_phase_label(&event.phase));
+                    indicator.set_visible(
+                        !matches!(event.phase, updater::UpdatePhase::Idle) || event.manual,
+                    );
+                    if matches!(event.phase, updater::UpdatePhase::WaitingForSafeExit)
+                        && !important_work.load(Ordering::Relaxed)
+                    {
+                        countdown.set(Some(5));
+                        countdown_ticks.set(0);
+                        window.add_css_class("update-restart-overlay");
+                        let dialog = Dialog::builder()
+                            .transient_for(&window)
+                            .modal(true)
+                            .decorated(false)
+                            .default_width(360)
+                            .default_height(280)
+                            .build();
+                        dialog.add_css_class("update-logo-dialog");
+                        let content = GtkBox::new(gtk::Orientation::Vertical, 14);
+                        content.set_valign(gtk::Align::Center);
+                        content.set_halign(gtk::Align::Center);
+                        let spinner = gtk::Spinner::new();
+                        spinner.set_size_request(150, 150);
+                        if gtk::Settings::default()
+                            .is_none_or(|settings| settings.is_gtk_enable_animations())
+                        {
+                            spinner.start();
+                        }
+                        spinner.add_css_class("update-logo-spinner");
+                        let logo = gtk::Image::from_resource(
+                            "/com/carlogger/CarLogger/icons/apex-trace.svg",
+                        );
+                        logo.set_pixel_size(112);
+                        let overlay = gtk::Overlay::new();
+                        overlay.set_child(Some(&spinner));
+                        overlay.add_overlay(&logo);
+                        let label = Label::new(Some("安全に保存して更新しています"));
+                        label.add_css_class("section-title");
+                        content.append(&overlay);
+                        content.append(&label);
+                        dialog.content_area().append(&content);
+                        dialog.present();
+                        restart_dialog.replace(Some(dialog));
+                    }
+                    if let updater::UpdatePhase::Failed(ref error) = event.phase {
+                        indicator.add_css_class("update-failed");
+                        if event.manual {
+                            show_update_message(&window, "更新を確認できませんでした", error);
+                        }
+                    } else {
+                        indicator.remove_css_class("update-failed");
+                    }
+                    if event.manual && matches!(event.phase, updater::UpdatePhase::Idle) {
+                        show_update_message(
+                            &window,
+                            "最新バージョンです",
+                            "利用可能な正式版の更新はありません。",
+                        );
+                    }
+                    last_event.replace(Some(event));
+                }
+                if let Some(value) = countdown.get() {
+                    if important_work.load(Ordering::Relaxed) {
+                        countdown.set(None);
+                        indicator.set_label("更新待機中");
+                        window.remove_css_class("update-restart-overlay");
+                        if let Some(dialog) = restart_dialog.borrow_mut().take() {
+                            dialog.close();
+                        }
+                    } else if value > 0 {
+                        indicator.set_label(&format!("{value}秒後に再起動"));
+                        let ticks = countdown_ticks.get() + 1;
+                        countdown_ticks.set(ticks);
+                        if ticks >= 5 {
+                            countdown_ticks.set(0);
+                            countdown.set(Some(value - 1));
+                        }
+                    } else if let Some(staged) = updater::take_staged() {
+                        let state_path = database_path.with_file_name("update-ui-state.json");
+                        let page = main_stack
+                            .visible_child_name()
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "dashboard".into());
+                        let _ = updater::save_ui_state(
+                            &state_path,
+                            &updater::RestorableUiState {
+                                page,
+                                width: window.width(),
+                                height: window.height(),
+                            },
+                        );
+                        indicator.set_label("更新適用中");
+                        if let Err(error) = updater::apply_and_restart(staged) {
+                            countdown.set(None);
+                            window.remove_css_class("update-restart-overlay");
+                            show_update_message(&window, "更新に失敗しました", &error);
+                            if let Some(dialog) = restart_dialog.borrow_mut().take() {
+                                dialog.close();
+                            }
+                        } else if let Some(app) = window.application() {
+                            app.quit();
+                        }
+                    }
+                }
+                glib::ControlFlow::Continue
+            }
+        ),
+    );
+    updater::spawn_check(false, sender.clone());
+    glib::timeout_add_local(Duration::from_secs(24 * 60 * 60), move || {
+        updater::spawn_check(false, sender.clone());
+        glib::ControlFlow::Continue
+    });
+
+    let state_path = database_path.with_file_name("update-ui-state.json");
+    if let Some(state) = updater::load_ui_state(&state_path) {
+        main_stack.set_visible_child_name(&state.page);
+        window.set_default_size(state.width.max(640), state.height.max(480));
+    }
+}
+
+fn update_phase_label(phase: &updater::UpdatePhase) -> String {
+    match phase {
+        updater::UpdatePhase::Idle => "最新".into(),
+        updater::UpdatePhase::Checking => "更新確認中".into(),
+        updater::UpdatePhase::Downloading(progress) => format!("ダウンロード中 {progress}%"),
+        updater::UpdatePhase::Verifying => "検証中".into(),
+        updater::UpdatePhase::WaitingForSafeExit => "更新待機中".into(),
+        updater::UpdatePhase::Failed(_) => "更新失敗".into(),
+    }
+}
+
+fn show_update_message(window: &ApplicationWindow, title: &str, detail: &str) {
+    let dialog = MessageDialog::builder()
+        .transient_for(window)
+        .modal(true)
+        .text(title)
+        .secondary_text(detail)
+        .buttons(gtk::ButtonsType::Close)
+        .build();
+    dialog.connect_response(|dialog, _| dialog.close());
+    dialog.present();
 }
 
 fn setup_ambient_background(surface: &GtkBox) {

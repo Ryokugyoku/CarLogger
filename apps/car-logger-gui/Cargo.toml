@@ -20,6 +20,10 @@ car-logger-transport = { path = "../../crates/transport" }
 car-logger-storage = { path = "../../crates/storage" }
 car-logger-ai-worker = { path = "../../crates/ai-worker" }
 serde_json.workspace = true
+serde.workspace = true
+semver.workspace = true
+sha2.workspace = true
+self_update.workspace = true
 
 [build-dependencies]
 glib-build-tools = "0.20"

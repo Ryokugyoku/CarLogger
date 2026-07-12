@@ -1,10 +1,12 @@
 use crate::localization::{LANGUAGE_SETTING_KEY, Language, apply_language};
 use crate::ui::TranslationManager;
+use crate::updater::UpdateEvent;
 use car_logger_storage::StorageRepository;
 use gtk::prelude::*;
-use gtk::{Box as GtkBox, ComboBoxText, Label, glib};
+use gtk::{Box as GtkBox, Button, ComboBoxText, Label, glib};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 pub struct SettingsView {
     root: GtkBox,
@@ -15,6 +17,7 @@ impl SettingsView {
         builder: &gtk::Builder,
         translation_manager: Rc<RefCell<TranslationManager>>,
         repository: Option<Rc<StorageRepository>>,
+        update_sender: mpsc::Sender<UpdateEvent>,
     ) -> Self {
         let root: GtkBox = builder
             .object("settings_view")
@@ -63,6 +66,20 @@ impl SettingsView {
                 }
             }
         ));
+
+        let check_button: Button = builder
+            .object("btn_check_updates")
+            .expect("Could not find btn_check_updates");
+        let current_version: Label = builder
+            .object("lbl_current_version")
+            .expect("Could not find lbl_current_version");
+        current_version.set_text(&format!(
+            "現在のバージョン: {}",
+            crate::updater::current_version()
+        ));
+        check_button.connect_clicked(move |_| {
+            crate::updater::spawn_check(true, update_sender.clone());
+        });
 
         Self { root }
     }

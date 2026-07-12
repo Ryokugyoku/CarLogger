@@ -81,6 +81,15 @@
     box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
 }
 
+.update-indicator { color: #65e8ff; background: #102731; border: 1px solid #278ca7; border-radius: 999px; padding: 5px 10px; font-weight: 800; }
+.update-indicator:hover { background: #163746; box-shadow: 0 0 14px rgba(40, 225, 255, 0.20); }
+.update-indicator.update-failed { color: #ff9b9b; border-color: #9b4545; background: #351b22; }
+.settings-update-card { min-width: 360px; padding: 16px; border: 1px solid #2b3d4b; border-radius: 12px; background: #171e26; }
+.update-restart-overlay { background: radial-gradient(circle, rgba(40,225,255,.15), rgba(5,10,18,.96)); }
+.update-restart-overlay .update-indicator { font-size: 14pt; box-shadow: 0 0 24px rgba(40,225,255,.35); }
+.update-logo-dialog { background: radial-gradient(circle, rgba(40,225,255,.13), #08111b 68%); border: 1px solid #278ca7; border-radius: 18px; }
+.update-logo-spinner { color: #28e1ff; opacity: .72; }
+
 .brand-name { color: #f2fbff; font-size: 17pt; font-weight: 900; letter-spacing: 1.8px; }
 .brand-tagline { color: #58dff5; font-size: 7.5pt; font-weight: 800; letter-spacing: 2.3px; }
 .feature-chip { border-radius: 999px; padding: 5px 9px; font-size: 8pt; font-weight: 800; }

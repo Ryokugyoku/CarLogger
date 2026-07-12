@@ -44,5 +44,16 @@
         </style>
       </object>
     </child>
+    <child>
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+        <property name="spacing">8</property>
+        <property name="halign">center</property>
+        <style><class name="settings-update-card"/></style>
+        <child><object class="GtkLabel"><property name="label" translatable="yes">Application updates</property><style><class name="section-title"/></style></object></child>
+        <child><object class="GtkLabel" id="lbl_current_version"><property name="label">現在のバージョン</property><style><class name="muted-label"/></style></object></child>
+        <child><object class="GtkButton" id="btn_check_updates"><property name="label" translatable="yes">更新を確認</property><style><class name="secondary-button"/></style></object></child>
+      </object>
+    </child>
   </object>
 </interface>
