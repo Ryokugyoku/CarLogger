@@ -2,6 +2,13 @@
 set -euo pipefail
 out="${1:?artifact directory}"; target="${2:?target}"; root="$(cd "$(dirname "$0")/.." && pwd)"
 source "$root/distribution/versions.env"
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1"
+  else
+    shasum -a 256 "$1"
+  fi
+}
 {
   echo "target=$target"
   echo "python=$PYTHON_VERSION"
@@ -14,4 +21,9 @@ source "$root/distribution/versions.env"
   echo "dependencies=distribution/requirements-$target.txt,Cargo.lock"
   echo "licenses=distribution/THIRD_PARTY_LICENSES.md"
 } > "$out/BUILD-MANIFEST.txt"
-(cd "$out" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 shasum -a 256 > SHA256SUMS)
+(
+  cd "$out"
+  while IFS= read -r -d '' file; do
+    sha256_file "$file"
+  done < <(find . -type f ! -name SHA256SUMS -print0 | sort -z)
+) > "$out/SHA256SUMS"
