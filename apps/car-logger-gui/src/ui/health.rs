@@ -119,6 +119,7 @@ fn domain_name(domain: car_logger_application::ScoreDomain) -> &'static str {
 
 struct Widgets {
     root: ScrolledWindow,
+    page: GtkBox,
     score: Label,
     state: Label,
     comparison: Label,
@@ -152,12 +153,7 @@ impl HealthView {
     ) -> Self {
         let widgets = Rc::new(build_widgets(&translation_manager));
         let ai_panel = AiConditionPanel::new(database_path.clone(), read_only, parent);
-        widgets
-            .root
-            .child()
-            .and_downcast::<GtkBox>()
-            .expect("health page")
-            .append(ai_panel.widget());
+        widgets.page.append(ai_panel.widget());
         let selection = Rc::new(RefCell::new(Selection::default()));
         let series = Rc::new(RefCell::new(Vec::<StoredHealthScore>::new()));
         let recalculating = Rc::new(Cell::new(false));
@@ -360,6 +356,7 @@ fn build_widgets(tm: &Rc<RefCell<TranslationManager>>) -> Widgets {
     }
     Widgets {
         root,
+        page,
         score,
         state,
         comparison,
