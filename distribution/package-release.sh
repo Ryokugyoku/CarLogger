@@ -11,9 +11,14 @@ sha256_file() {
     shasum -a 256 "$1"
   fi
 }
+if command -v python >/dev/null 2>&1; then
+  python_bin=python
+else
+  python_bin=python3
+fi
 mkdir -p "$assets"
 binary="car-logger-gui"; [[ "$PLATFORM" == windows-* ]] && binary="car-logger-gui.exe"
-(cd "$source_dir" && zip -9 "$assets/$name.zip" "$binary")
+(cd "$source_dir" && "$python_bin" -m zipfile -c "$assets/$name.zip" "$binary")
 (cd "$assets" && sha256_file "$name.zip" > "$name.zip.sha256")
 if [[ "$PLATFORM" == linux-* ]]; then
   appdir="$root/target/APEX-TRACE.AppDir"; rm -rf "$appdir"; mkdir -p "$appdir/usr/bin" "$appdir/usr/share/icons/hicolor/scalable/apps"
