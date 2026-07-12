@@ -5,7 +5,7 @@ mod realtime_logging;
 mod signal_decoder;
 mod ui;
 
-use crate::dashboard::setup_dashboard_refresh;
+use crate::dashboard::create_dashboard;
 use crate::localization::{LANGUAGE_SETTING_KEY, Language, apply_language};
 use crate::realtime_logging::{
     RealtimeLoggingEvent, RealtimeLoggingSession, spawn_realtime_logging,
@@ -209,23 +209,8 @@ fn build_ui(
         realtime_state.clone(),
         is_connected.clone(),
     );
-    let dashboard_builder = gtk::Builder::from_resource("/com/carlogger/CarLogger/ui/dashboard.ui");
-    let dashboard_view: gtk::ScrolledWindow = dashboard_builder
-        .object("dashboard_view")
-        .expect("Could not find dashboard_view");
+    let dashboard_view = create_dashboard(database_path.clone(), &window);
     dashboard_container.append(&dashboard_view);
-    setup_dashboard_refresh(
-        &dashboard_builder,
-        realtime_state,
-        translation_manager.clone(),
-        config::log_database_path(&database_path),
-        is_connected,
-    );
-
-    // 各ページのタイトルラベルを登録（window.ui内）
-    if let Some(lbl) = dashboard_builder.object::<Label>("lbl_dash_title") {
-        translation_manager.borrow_mut().add(lbl, "Dashboard");
-    }
     if let Some(lbl) = builder.object::<Label>("lbl_logs_title") {
         translation_manager.borrow_mut().add(lbl, "Log Analysis");
     }

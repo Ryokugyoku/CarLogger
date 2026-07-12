@@ -77,6 +77,7 @@ impl SqliteMasterRepository {
 
         self.migrate_signal_definitions_schema()?;
         self.migrate_existing_id_definitions_to_pid()?;
+        crate::vehicle_data::initialize_vehicle_data_schema(&self.connection)?;
         insert_builtin_pid_definitions(&self.connection)?;
 
         Ok(())

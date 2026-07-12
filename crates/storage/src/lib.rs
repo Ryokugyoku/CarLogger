@@ -10,6 +10,7 @@ mod paths;
 mod repository;
 mod retention;
 pub mod sqlite;
+pub mod vehicle_data;
 
 pub use duckdb::DuckdbCanFrameRepository;
 pub use repository::StorageRepository;

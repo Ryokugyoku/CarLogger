@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use car_logger_domain::{
-    CanFrame, DecodedSignalValue, RealtimeSignalState, SignalDefinition, SignalKind,
-};
+use car_logger_domain::{CanFrame, DecodedSignalValue, SignalDefinition, SignalKind};
 use chrono::Utc;
 
 pub type SignalDefinitionMap = HashMap<(SignalKind, u32), SignalDefinition>;
@@ -29,29 +27,6 @@ pub fn decode_frame(
         formula: definition.formula.clone(),
         updated_at: Utc::now(),
     }])
-}
-
-pub fn find_metric(snapshot: &[RealtimeSignalState], names: &[&str]) -> Option<DecodedSignalValue> {
-    let values = || {
-        snapshot
-            .iter()
-            .flat_map(|state| state.decoded_values.iter())
-    };
-
-    values()
-        .find(|value| {
-            names
-                .iter()
-                .any(|name| value.name.eq_ignore_ascii_case(name))
-        })
-        .or_else(|| {
-            values().find(|value| {
-                names
-                    .iter()
-                    .any(|name| value.name.to_ascii_lowercase().contains(name))
-            })
-        })
-        .cloned()
 }
 
 pub fn evaluate_formula(formula: &str, data: &[u8]) -> Option<f64> {

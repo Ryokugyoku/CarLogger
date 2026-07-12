@@ -3,6 +3,8 @@ use car_logger_domain::CanFrame;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub mod vehicle_dashboard;
+
 pub use car_logger_health::{ScoreDomain, ScoreReason};
 
 /// CANフレームの取得元。

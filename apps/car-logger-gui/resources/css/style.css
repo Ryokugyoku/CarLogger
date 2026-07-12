@@ -172,6 +172,16 @@
 .dashboard-root {
     padding: 18px 22px 28px 22px;
 }
+.dashboard-summary-card, .fuel-analysis-card {
+    padding: 16px; border: 1px solid #2b3d4b; border-radius: 12px;
+    background: linear-gradient(145deg, #171e26, #15191f);
+}
+.dashboard-summary-value { color: #f5fbff; font-size: 22pt; font-weight: 900; }
+.summary-comparison { color: #75d8ea; font-size: 9pt; }
+.fuel-analysis-value { color: #73edff; font-size: 16pt; font-weight: 800; }
+.pending-refuel-card { padding: 13px 16px; border-radius: 10px; border-left: 4px solid #ffd166; background: #292515; }
+.monthly-row { padding: 9px 12px; border-bottom: 1px solid #29343d; color: #dce9ee; }
+.error-label { color: #ff8f8f; }
 
 .offline-hero {
     padding: 22px 24px;

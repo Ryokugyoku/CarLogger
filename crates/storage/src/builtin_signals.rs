@@ -166,6 +166,12 @@ const BRZ_86_BUILTIN_PID_DEFINITIONS: &[BuiltinSignalDefinition] = &[
         unit: Some("degC"),
         formula: "A-40",
     },
+    BuiltinSignalDefinition {
+        id: 0xA6,
+        name: "Odometer",
+        unit: Some("km"),
+        formula: "((A*16777216)+(B*65536)+(C*256)+D)/10",
+    },
 ];
 
 pub(crate) fn insert_builtin_pid_definitions(connection: &Connection) -> Result<()> {

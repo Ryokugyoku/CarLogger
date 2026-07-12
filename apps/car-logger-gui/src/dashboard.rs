@@ -1,720 +1,479 @@
-use std::cell::Cell;
-use std::cell::RefCell;
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
-use std::time::Duration;
-
-use car_logger_application::{
-    DiagnosticDashboardData, DiagnosticRepository, HealthDashboardData, HealthService, ScoreDomain,
-    ScoreGranularity, ScoreStatus,
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
 };
-use car_logger_domain::{RealtimeSignalState, RealtimeState};
-use car_logger_storage::DuckdbCanFrameRepository;
-use chrono::{Local, TimeDelta, Utc};
-use crossbeam_channel::unbounded;
+
+use car_logger_application::vehicle_dashboard::{
+    AggregateInput, DashboardPeriod, DataQuality, aggregate, period_range, previous_range,
+};
+use car_logger_storage::vehicle_data::{
+    DEFAULT_VEHICLE_KEY, PeriodTotals, RefuelCandidate, RefuelStatus, VehicleDataRepository,
+};
+use chrono::{Datelike, Local, NaiveDate, TimeZone, Utc};
 use gtk::prelude::*;
-use gtk::{Box as GtkBox, Grid, Label, Orientation, ProgressBar, glib};
+use gtk::{
+    ApplicationWindow, Box as GtkBox, Button, ComboBoxText, Dialog, Entry, Grid, Label,
+    Orientation, ScrolledWindow, SpinButton,
+};
 
-use crate::localization::translate;
-use crate::signal_decoder::find_metric;
-use crate::ui::TranslationManager;
-
-struct MetricBinding {
-    label_id: &'static str,
-    names: &'static [&'static str],
-    fallback_unit: &'static str,
+struct DashboardWidgets {
+    period: ComboBoxText,
+    year: SpinButton,
+    pending_box: GtkBox,
+    pending_label: Label,
+    summary: [Label; 4],
+    comparisons: [Label; 4],
+    quality: Label,
+    monthly: GtkBox,
+    analysis: [Label; 4],
+    error: Label,
 }
 
-const TEXT_METRICS: &[MetricBinding] = &[
-    MetricBinding {
-        label_id: "metric_rpm",
-        names: &["engine rpm"],
-        fallback_unit: "rpm",
-    },
-    MetricBinding {
-        label_id: "metric_speed",
-        names: &["vehicle speed"],
-        fallback_unit: "km/h",
-    },
-    MetricBinding {
-        label_id: "metric_intake_pressure",
-        names: &["intake manifold absolute pressure"],
-        fallback_unit: "kPa",
-    },
-    MetricBinding {
-        label_id: "metric_maf",
-        names: &["mass air flow rate"],
-        fallback_unit: "g/s",
-    },
-    MetricBinding {
-        label_id: "metric_timing_advance",
-        names: &["timing advance"],
-        fallback_unit: "deg",
-    },
-    MetricBinding {
-        label_id: "metric_voltage",
-        names: &["control module voltage"],
-        fallback_unit: "V",
-    },
-    MetricBinding {
-        label_id: "metric_coolant",
-        names: &["engine coolant temperature"],
-        fallback_unit: "degC",
-    },
-    MetricBinding {
-        label_id: "metric_intake_temp",
-        names: &["intake air temperature"],
-        fallback_unit: "degC",
-    },
-    MetricBinding {
-        label_id: "metric_ambient_temp",
-        names: &["ambient air temperature"],
-        fallback_unit: "degC",
-    },
-    MetricBinding {
-        label_id: "metric_oil_temp",
-        names: &["engine oil temperature"],
-        fallback_unit: "degC",
-    },
-    MetricBinding {
-        label_id: "metric_catalyst_temp",
-        names: &["catalyst temperature"],
-        fallback_unit: "degC",
-    },
-    MetricBinding {
-        label_id: "metric_distance_mil",
-        names: &["distance with mil on"],
-        fallback_unit: "km",
-    },
-    MetricBinding {
-        label_id: "metric_distance_dtc",
-        names: &["distance since dtcs cleared"],
-        fallback_unit: "km",
-    },
-    MetricBinding {
-        label_id: "metric_run_time",
-        names: &["run time since engine start"],
-        fallback_unit: "s",
-    },
-];
-
-struct RatioMetric {
-    title: &'static str,
-    names: &'static [&'static str],
-    min: f64,
-    max: f64,
-}
-
-const RATIO_METRICS: &[RatioMetric] = &[
-    RatioMetric {
-        title: "Engine load",
-        names: &["calculated engine load"],
-        min: 0.0,
-        max: 100.0,
-    },
-    RatioMetric {
-        title: "Throttle",
-        names: &["throttle position"],
-        min: 0.0,
-        max: 100.0,
-    },
-    RatioMetric {
-        title: "Accelerator",
-        names: &["accelerator pedal position d"],
-        min: 0.0,
-        max: 100.0,
-    },
-    RatioMetric {
-        title: "Commanded throttle",
-        names: &["commanded throttle actuator"],
-        min: 0.0,
-        max: 100.0,
-    },
-    RatioMetric {
-        title: "Short fuel trim",
-        names: &["short term fuel trim"],
-        min: -100.0,
-        max: 100.0,
-    },
-    RatioMetric {
-        title: "Long fuel trim",
-        names: &["long term fuel trim"],
-        min: -100.0,
-        max: 100.0,
-    },
-    RatioMetric {
-        title: "Fuel level",
-        names: &["fuel tank level input"],
-        min: 0.0,
-        max: 100.0,
-    },
-];
-
-#[derive(Clone)]
-struct RatioChart {
-    metric: &'static RatioMetric,
-    progress: ProgressBar,
-    value_label: Label,
-    current: Rc<Cell<f64>>,
-    target: Rc<Cell<f64>>,
-}
-
-const DASHBOARD_LABELS: &[(&str, &str)] = &[
-    ("lbl_dashboard_subtitle", "Realtime vehicle telemetry"),
-    ("lbl_dashboard_live", "● LIVE"),
-    ("lbl_dashboard_engine", "ENGINE"),
-    ("lbl_dashboard_speed", "Vehicle speed"),
-    ("lbl_dashboard_intake_pressure", "Intake pressure"),
-    ("lbl_dashboard_timing", "Timing advance"),
-    ("lbl_dashboard_voltage", "Voltage"),
-    ("lbl_dashboard_ratios", "LIVE RATIOS"),
-    ("lbl_dashboard_temperatures", "TEMPERATURES"),
-    ("lbl_dashboard_coolant", "Coolant"),
-    ("lbl_dashboard_intake_air", "Intake air"),
-    ("lbl_dashboard_ambient", "Ambient"),
-    ("lbl_dashboard_oil", "Engine oil"),
-    ("lbl_dashboard_catalyst", "Catalyst"),
-    ("lbl_dashboard_trip", "TRIP & DIAGNOSTICS"),
-    ("lbl_dashboard_mil_distance", "MIL distance"),
-    ("lbl_dashboard_dtc_distance", "DTC cleared distance"),
-    ("lbl_dashboard_run_time", "Engine run time"),
-    ("lbl_dashboard_known", "Known Signals"),
-    ("lbl_dashboard_signal", "Signal"),
-    ("lbl_dashboard_value", "Value"),
-    ("lbl_dashboard_source", "Source"),
-    ("lbl_dashboard_unknown", "Unknown CAN IDs"),
-    ("lbl_dashboard_can_id", "CAN ID"),
-    ("lbl_dashboard_payload", "Payload"),
-    ("lbl_dashboard_count", "Count"),
-];
-
-pub fn setup_dashboard_refresh(
-    builder: &gtk::Builder,
-    realtime_state: Arc<RealtimeState>,
-    translation_manager: Rc<RefCell<TranslationManager>>,
-    log_database_path: PathBuf,
-    is_connected: Arc<AtomicBool>,
-) {
-    setup_offline_summary(builder, log_database_path);
-    let mode_stack: gtk::Stack = builder
-        .object("dashboard_mode_stack")
-        .expect("Could not find dashboard_mode_stack");
-    mode_stack.set_visible_child_name("offline");
-    {
-        let mut tm = translation_manager.borrow_mut();
-        for (label_id, msgid) in DASHBOARD_LABELS {
-            let label: Label = builder
-                .object(*label_id)
-                .unwrap_or_else(|| panic!("Could not find {label_id}"));
-            tm.add(label, msgid);
-        }
-    }
-    let last_seen_label: Label = builder
-        .object("lbl_last_seen")
-        .expect("Could not find lbl_last_seen");
-    let metric_labels = TEXT_METRICS
-        .iter()
-        .map(|metric| {
-            let label: Label = builder
-                .object(metric.label_id)
-                .unwrap_or_else(|| panic!("Could not find {}", metric.label_id));
-            (metric, label)
-        })
-        .collect::<Vec<_>>();
-    let ratio_container: GtkBox = builder
-        .object("ratio_chart_container")
-        .expect("Could not find ratio_chart_container");
-    let ratio_charts = RATIO_METRICS
-        .iter()
-        .map(|metric| create_ratio_chart(&ratio_container, metric, &translation_manager))
-        .collect::<Vec<_>>();
-    let known_signal_table: Grid = builder
-        .object("known_signal_table")
-        .expect("Could not find known_signal_table");
-    let unknown_can_table: Grid = builder
-        .object("unknown_can_table")
-        .expect("Could not find unknown_can_table");
-    let engine_card: GtkBox = builder
-        .object("engine_card")
-        .expect("Could not find engine_card");
-    let smoothed_rpm = Rc::new(Cell::new(0.0));
-
-    glib::timeout_add_local(
-        Duration::from_millis(250),
-        glib::clone!(
-            #[strong]
-            last_seen_label,
-            #[strong]
-            metric_labels,
-            #[strong]
-            ratio_charts,
-            #[strong]
-            known_signal_table,
-            #[strong]
-            unknown_can_table,
-            #[strong]
-            engine_card,
-            #[strong]
-            smoothed_rpm,
-            #[strong]
-            mode_stack,
-            #[strong]
-            is_connected,
-            move || {
-                mode_stack.set_visible_child_name(if is_connected.load(Ordering::Relaxed) {
-                    "live"
-                } else {
-                    "offline"
-                });
-                let snapshot = realtime_state
-                    .snapshot()
-                    .into_iter()
-                    .map(|(_, state)| state)
-                    .collect::<Vec<_>>();
-
-                for (metric, label) in &metric_labels {
-                    update_metric_label(label, &snapshot, metric.names, metric.fallback_unit);
-                }
-                update_ratio_charts(&ratio_charts, &snapshot);
-                update_last_seen_label(&last_seen_label, &snapshot);
-                update_known_signal_table(&known_signal_table, &snapshot);
-                update_unknown_can_table(&unknown_can_table, &snapshot);
-                update_engine_accent(&engine_card, &smoothed_rpm, &snapshot);
-
-                glib::ControlFlow::Continue
-            }
-        ),
-    );
-
-    glib::timeout_add_local(
-        Duration::from_millis(16),
-        glib::clone!(
-            #[strong]
-            ratio_charts,
-            move || {
-                for chart in &ratio_charts {
-                    let current = chart.current.get();
-                    let target = chart.target.get();
-                    let next = current + (target - current) * 0.14;
-                    chart.current.set(next);
-                    chart.progress.set_fraction(next.clamp(0.0, 1.0));
-                }
-                glib::ControlFlow::Continue
-            }
-        ),
-    );
-}
-
-struct OfflineData {
-    health: HealthDashboardData,
-    diagnostics: DiagnosticDashboardData,
-}
-
-fn setup_offline_summary(builder: &gtk::Builder, path: PathBuf) {
-    let score: Label = builder
-        .object("offline_health_score")
-        .expect("offline_health_score");
-    let state: Label = builder
-        .object("offline_health_state")
-        .expect("offline_health_state");
-    let meta: Label = builder
-        .object("offline_health_meta")
-        .expect("offline_health_meta");
-    let diagnostic_state: Label = builder
-        .object("offline_diagnostic_state")
-        .expect("offline_diagnostic_state");
-    let diagnostic_meta: Label = builder
-        .object("offline_diagnostic_meta")
-        .expect("offline_diagnostic_meta");
-    let learning: Label = builder
-        .object("offline_learning")
-        .expect("offline_learning");
-    let domains = [
-        (
-            ScoreDomain::Thermal,
-            builder.object::<Label>("offline_domain_thermal").unwrap(),
-        ),
-        (
-            ScoreDomain::Electrical,
-            builder
-                .object::<Label>("offline_domain_electrical")
-                .unwrap(),
-        ),
-        (
-            ScoreDomain::AirFuel,
-            builder.object::<Label>("offline_domain_air_fuel").unwrap(),
-        ),
-        (
-            ScoreDomain::RunningStability,
-            builder.object::<Label>("offline_domain_stability").unwrap(),
-        ),
-    ];
-    let (sender, receiver) = unbounded();
-    thread::spawn(move || {
-        let result = (|| {
-            let repository = DuckdbCanFrameRepository::open_read_only(path)?;
-            let diagnostics = repository.diagnostic_dashboard(20)?;
-            let now = Utc::now();
-            let health = HealthService::new(repository).dashboard(
-                ScoreGranularity::Day,
-                now - TimeDelta::days(30),
-                now,
-                31,
-            )?;
-            anyhow::Ok(OfflineData {
-                health,
-                diagnostics,
-            })
-        })()
-        .map_err(|error: anyhow::Error| error.to_string());
-        let _ = sender.send(result);
-    });
-    glib::timeout_add_local(Duration::from_millis(100), move || {
-        let Ok(result) = receiver.try_recv() else {
-            return glib::ControlFlow::Continue;
-        };
-        match result {
-            Ok(data) => render_offline_summary(
-                &score,
-                &state,
-                &meta,
-                &diagnostic_state,
-                &diagnostic_meta,
-                &learning,
-                &domains,
-                &data,
-            ),
-            Err(error) => {
-                state.set_text(&translate("Vehicle history unavailable"));
-                meta.set_text(&error);
-                diagnostic_state.set_text(&translate("Diagnostics unavailable"));
-                learning.set_text(&translate("No learning data available"));
-            }
-        }
-        glib::ControlFlow::Break
-    });
-}
-
-fn render_offline_summary(
-    score: &Label,
-    state: &Label,
-    meta: &Label,
-    diagnostic_state: &Label,
-    diagnostic_meta: &Label,
-    learning: &Label,
-    domains: &[(ScoreDomain, Label)],
-    data: &OfflineData,
-) {
-    if let Some(latest) = &data.health.latest {
-        score.set_text(
-            &latest
-                .score
-                .map(|value| format!("{value:.0}"))
-                .unwrap_or_else(|| "—".into()),
-        );
-        let state_text = match (latest.status, latest.score) {
-            (ScoreStatus::Scored, Some(value)) if value < 40.0 => "Needs attention",
-            (ScoreStatus::Scored, Some(value)) if value < 70.0 => "Watch",
-            (ScoreStatus::Scored, Some(_)) => "Healthy",
-            (ScoreStatus::Scored, None) => "No data",
-            (ScoreStatus::Learning, _) => "Learning",
-            (ScoreStatus::InsufficientData, _) => "Insufficient data",
-            (ScoreStatus::NoData, _) => "No data",
-            (ScoreStatus::CalculationFailed, _) => "Calculation failed",
-        };
-        state.set_text(&translate(state_text));
-        let difference = data
-            .health
-            .previous
-            .as_ref()
-            .and_then(|previous| previous.score)
-            .zip(latest.score)
-            .map(|(previous, current)| {
-                format!(" · {} {:+.1}", translate("vs previous"), current - previous)
-            })
-            .unwrap_or_default();
-        meta.set_text(&format!(
-            "{} {:.0}%{} · {} {}",
-            translate("Confidence"),
-            latest.confidence,
-            difference,
-            translate("Last updated"),
-            latest
-                .calculated_at
-                .with_timezone(&Local)
-                .format("%Y-%m-%d %H:%M")
-        ));
-        learning.set_text(&format!(
-            "{}: {} · {}: {:.1}h · {}: {:.0}%",
-            translate("Valid sessions"),
-            latest.session_count,
-            translate("Evaluated time"),
-            latest.evaluated_seconds / 3600.0,
-            translate("Data coverage"),
-            latest.coverage * 100.0
-        ));
-    } else {
-        state.set_text(&translate("No data"));
-        meta.set_text(&translate(
-            "Drive with logging enabled to build a health score.",
-        ));
-        learning.set_text(&translate("No learning data available"));
-    }
-    for (domain, label) in domains {
-        let value = data
-            .health
-            .components
-            .iter()
-            .find(|component| component.domain == *domain)
-            .and_then(|component| component.score);
-        label.set_text(
-            &value
-                .map(|value| format!("{value:.0}"))
-                .unwrap_or_else(|| "—".into()),
-        );
-    }
-    let diagnostics = &data.diagnostics;
-    diagnostic_state.set_text(&match diagnostics.mil_on {
-        Some(true) => format!("MIL ON · {} DTC", diagnostics.active.len()),
-        Some(false) => format!("MIL OFF · {} DTC", diagnostics.active.len()),
-        None => translate("Not observed yet"),
-    });
-    diagnostic_meta.set_text(
-        &diagnostics
-            .last_observed_at
-            .map(|at| {
-                format!(
-                    "{} {}",
-                    translate("Last acquisition"),
-                    at.with_timezone(&Local).format("%Y-%m-%d %H:%M")
-                )
-            })
-            .unwrap_or_else(|| translate("No diagnostic observation yet")),
-    );
-}
-
-fn update_engine_accent(
-    engine_card: &GtkBox,
-    smoothed_rpm: &Cell<f64>,
-    snapshot: &[RealtimeSignalState],
-) {
-    let target = find_metric(snapshot, &["engine rpm"])
-        .map(|value| value.value.max(0.0))
-        .unwrap_or(0.0);
-    let rpm = smoothed_rpm.get() + (target - smoothed_rpm.get()) * 0.22;
-    smoothed_rpm.set(rpm);
-
-    for class in ["rpm-idle", "rpm-cruise", "rpm-high"] {
-        engine_card.remove_css_class(class);
-    }
-    engine_card.add_css_class(if rpm >= 4_500.0 {
-        "rpm-high"
-    } else if rpm >= 2_000.0 {
-        "rpm-cruise"
-    } else {
-        "rpm-idle"
-    });
-}
-
-fn create_ratio_chart(
-    container: &GtkBox,
-    metric: &'static RatioMetric,
-    translation_manager: &Rc<RefCell<TranslationManager>>,
-) -> RatioChart {
-    let row = GtkBox::new(Orientation::Vertical, 5);
-    row.add_css_class("ratio-chart");
-
-    let header = GtkBox::new(Orientation::Horizontal, 8);
-    let title = Label::new(Some(&translate(metric.title)));
+pub fn create_dashboard(path: PathBuf, parent: &ApplicationWindow) -> ScrolledWindow {
+    let root = GtkBox::new(Orientation::Vertical, 14);
+    root.add_css_class("dashboard-root");
+    let title = Label::new(Some("燃料・走行ダッシュボード"));
     title.set_halign(gtk::Align::Start);
-    title.set_hexpand(true);
-    title.add_css_class("ratio-chart-label");
-    translation_manager
-        .borrow_mut()
-        .add(title.clone(), metric.title);
-    let value_label = Label::new(Some("-- %"));
-    value_label.set_halign(gtk::Align::End);
-    value_label.add_css_class("ratio-chart-value");
-    header.append(&title);
-    header.append(&value_label);
-
-    let progress = ProgressBar::new();
-    progress.set_hexpand(true);
-    progress.add_css_class("ratio-progress");
-    row.append(&header);
-    row.append(&progress);
-    container.append(&row);
-
-    RatioChart {
-        metric,
-        progress,
-        value_label,
-        current: Rc::new(Cell::new(0.0)),
-        target: Rc::new(Cell::new(0.0)),
+    title.add_css_class("title-label");
+    root.append(&title);
+    let subtitle = Label::new(Some("選択中の車両 · 確定済みデータを集計"));
+    subtitle.set_halign(gtk::Align::Start);
+    subtitle.add_css_class("muted-label");
+    root.append(&subtitle);
+    let controls = GtkBox::new(Orientation::Horizontal, 8);
+    let period = ComboBoxText::new();
+    for (id, text) in [
+        ("6", "直近6か月"),
+        ("12", "直近12か月"),
+        ("year", "指定年"),
+        ("all", "全期間"),
+    ] {
+        period.append(Some(id), text)
     }
+    period.set_active_id(Some("12"));
+    let year = SpinButton::with_range(2000.0, 2100.0, 1.0);
+    year.set_value(Local::now().year() as f64);
+    controls.append(&period);
+    controls.append(&year);
+    root.append(&controls);
+    let pending_box = GtkBox::new(Orientation::Horizontal, 12);
+    pending_box.add_css_class("pending-refuel-card");
+    let pending_label = Label::new(None);
+    pending_label.set_hexpand(true);
+    pending_label.set_halign(gtk::Align::Start);
+    let pending_button = Button::with_label("確認する");
+    pending_box.append(&pending_label);
+    pending_box.append(&pending_button);
+    root.append(&pending_box);
+    let grid = Grid::new();
+    grid.set_column_spacing(12);
+    grid.set_row_spacing(12);
+    grid.set_column_homogeneous(true);
+    let titles = ["燃料費", "走行距離", "平均燃費", "1kmあたり燃料費"];
+    let summary = std::array::from_fn(|i| {
+        let card = GtkBox::new(Orientation::Vertical, 5);
+        card.add_css_class("dashboard-summary-card");
+        let h = Label::new(Some(titles[i]));
+        h.set_halign(gtk::Align::Start);
+        h.add_css_class("muted-label");
+        let v = Label::new(Some("—"));
+        v.set_halign(gtk::Align::Start);
+        v.add_css_class("dashboard-summary-value");
+        card.append(&h);
+        card.append(&v);
+        grid.attach(&card, i as i32, 0, 1, 1);
+        v
+    });
+    let comparisons = std::array::from_fn(|i| {
+        let v = Label::new(None);
+        v.set_halign(gtk::Align::Start);
+        v.add_css_class("summary-comparison");
+        grid.child_at(i as i32, 0)
+            .unwrap()
+            .downcast::<GtkBox>()
+            .unwrap()
+            .append(&v);
+        v
+    });
+    root.append(&grid);
+    let quality = Label::new(None);
+    quality.set_halign(gtk::Align::Start);
+    quality.add_css_class("muted-label");
+    root.append(&quality);
+    let monthly = GtkBox::new(Orientation::Vertical, 6);
+    let chart_title = Label::new(Some("月別推移 · 燃料費"));
+    chart_title.set_halign(gtk::Align::Start);
+    chart_title.add_css_class("section-title");
+    root.append(&chart_title);
+    root.append(&monthly);
+    let analysis_grid = Grid::new();
+    analysis_grid.set_column_spacing(12);
+    analysis_grid.set_column_homogeneous(true);
+    let analysis_titles = ["給油総額", "総給油量", "加重平均単価", "1kmあたり燃料費"];
+    let analysis = std::array::from_fn(|i| {
+        let b = GtkBox::new(Orientation::Vertical, 4);
+        b.add_css_class("fuel-analysis-card");
+        b.append(&Label::new(Some(analysis_titles[i])));
+        let l = Label::new(Some("—"));
+        l.add_css_class("fuel-analysis-value");
+        b.append(&l);
+        analysis_grid.attach(&b, i as i32, 0, 1, 1);
+        l
+    });
+    root.append(&Label::new(Some("燃料分析")));
+    root.append(&analysis_grid);
+    let error = Label::new(None);
+    error.add_css_class("error-label");
+    root.append(&error);
+    let widgets = Rc::new(DashboardWidgets {
+        period: period.clone(),
+        year: year.clone(),
+        pending_box,
+        pending_label,
+        summary,
+        comparisons,
+        quality,
+        monthly,
+        analysis,
+        error,
+    });
+    refresh(&path, &widgets);
+    period.connect_changed({
+        let w = widgets.clone();
+        let p = path.clone();
+        move |_| refresh(&p, &w)
+    });
+    year.connect_value_changed({
+        let w = widgets.clone();
+        let p = path.clone();
+        move |_| refresh(&p, &w)
+    });
+    pending_button.connect_clicked({
+        let w = widgets.clone();
+        let p = path.clone();
+        let parent = parent.clone();
+        move |_| show_pending(&p, &parent, &w)
+    });
+    let scroll = ScrolledWindow::new();
+    scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
+    scroll.set_child(Some(&root));
+    scroll
 }
 
-fn update_ratio_charts(charts: &[RatioChart], snapshot: &[RealtimeSignalState]) {
-    for chart in charts {
-        if let Some(value) = find_metric(snapshot, chart.metric.names) {
-            let range = chart.metric.max - chart.metric.min;
-            chart
-                .target
-                .set(((value.value - chart.metric.min) / range).clamp(0.0, 1.0));
-            chart.value_label.set_text(&format!("{:.1} %", value.value));
+fn selected_period(w: &DashboardWidgets) -> DashboardPeriod {
+    match w.period.active_id().as_deref() {
+        Some("6") => DashboardPeriod::Last6Months,
+        Some("year") => DashboardPeriod::Year(w.year.value_as_int()),
+        Some("all") => DashboardPeriod::All,
+        _ => DashboardPeriod::Last12Months,
+    }
+}
+fn date_time(date: NaiveDate) -> chrono::DateTime<Utc> {
+    Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+}
+fn totals_input(t: &PeriodTotals) -> AggregateInput {
+    AggregateInput {
+        fuel_cost_yen: t.fuel_cost_yen,
+        refuel_litres: t.refuel_litres,
+        distance_km: t.distance_km,
+        consumed_litres: t.consumed_litres,
+        quality: if t.has_estimates {
+            DataQuality::Estimated
         } else {
-            chart.target.set(0.0);
-            chart.value_label.set_text("-- %");
-        }
+            DataQuality::Measured
+        },
     }
 }
-
-fn update_metric_label(
-    label: &Label,
-    snapshot: &[RealtimeSignalState],
-    names: &[&str],
-    fallback_unit: &str,
+fn refresh(path: &PathBuf, w: &DashboardWidgets) {
+    w.error.set_text("");
+    let repo = match VehicleDataRepository::open(path) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("dashboard load failed: {e}");
+            w.error
+                .set_text("データを読み込めませんでした。ほかの機能は引き続き利用できます。");
+            return;
+        }
+    };
+    let today = Local::now().date_naive();
+    let period = selected_period(w);
+    let range = period_range(period, today, None);
+    let current = match repo.period_totals(
+        DEFAULT_VEHICLE_KEY,
+        date_time(range.start),
+        date_time(range.end_exclusive),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("dashboard query failed: {e}");
+            w.error
+                .set_text("集計に失敗しました。しばらくしてから再試行してください。");
+            return;
+        }
+    };
+    let a = aggregate(&[totals_input(&current)]);
+    w.summary[0].set_text(&format!("¥{:.0}", a.fuel_cost_yen));
+    w.summary[1].set_text(
+        &a.distance_km
+            .map(|v| format!("{v:.0} km"))
+            .unwrap_or_else(|| "データなし".into()),
+    );
+    w.summary[2].set_text(
+        &a.average_efficiency
+            .map(|v| format!("{v:.1} km/L"))
+            .unwrap_or_else(|| "データなし".into()),
+    );
+    w.summary[3].set_text(
+        &a.cost_per_km
+            .map(|v| format!("{v:.1} 円/km"))
+            .unwrap_or_else(|| "データなし".into()),
+    );
+    w.analysis[0].set_text(&format!("¥{:.0}", a.fuel_cost_yen));
+    w.analysis[1].set_text(&format!("{:.2} L", a.refuel_litres));
+    w.analysis[2].set_text(
+        &a.weighted_unit_price
+            .map(|v| format!("{v:.1} 円/L"))
+            .unwrap_or_else(|| "データなし".into()),
+    );
+    w.analysis[3].set_text(
+        &a.cost_per_km
+            .map(|v| format!("{v:.1} 円/km"))
+            .unwrap_or_else(|| "データなし".into()),
+    );
+    if let Some(pr) = previous_range(period, range) {
+        if let Ok(prev) = repo.period_totals(
+            DEFAULT_VEHICLE_KEY,
+            date_time(pr.start),
+            date_time(pr.end_exclusive),
+        ) {
+            let pa = aggregate(&[totals_input(&prev)]);
+            let current_values = [
+                Some(a.fuel_cost_yen),
+                a.distance_km,
+                a.average_efficiency,
+                a.cost_per_km,
+            ];
+            let previous_values = [
+                Some(pa.fuel_cost_yen),
+                pa.distance_km,
+                pa.average_efficiency,
+                pa.cost_per_km,
+            ];
+            for i in 0..4 {
+                w.comparisons[i].set_text(&compare(
+                    current_values[i],
+                    previous_values[i],
+                    i,
+                    range.in_progress,
+                ));
+            }
+        }
+    } else {
+        for l in &w.comparisons {
+            l.set_text("")
+        }
+    }
+    w.quality.set_text(if current.pending_count > 0 {
+        "一部推定または暫定値 · 未確認データあり"
+    } else if current.has_estimates {
+        "一部推定"
+    } else if a.distance_km.is_none() && a.refuel_litres == 0.0 {
+        "走行データがまだありません · 給油を検知すると、ここに記録されます"
+    } else {
+        "実測"
+    });
+    w.pending_box.set_visible(current.pending_count > 0);
+    w.pending_label
+        .set_text(&format!("未確認の給油  {}件", current.pending_count));
+    render_months(&repo, w, range.start, range.end_exclusive, today);
+}
+fn compare(now: Option<f64>, before: Option<f64>, kind: usize, in_progress: bool) -> String {
+    let suffix = if in_progress { " · 集計途中" } else { "" };
+    match (now, before) {
+        (Some(n), Some(b)) if kind < 2 && b.abs() > f64::EPSILON => {
+            format!("前期間比 {:+.0}%{suffix}", (n - b) / b * 100.0)
+        }
+        (Some(n), Some(b)) if kind == 2 => format!("前期間比 {:+.1} km/L{suffix}", n - b),
+        (Some(n), Some(b)) => format!("前期間比 {:+.1} 円/km{suffix}", n - b),
+        _ => "比較データなし".into(),
+    }
+}
+fn render_months(
+    repo: &VehicleDataRepository,
+    w: &DashboardWidgets,
+    mut month: NaiveDate,
+    end: NaiveDate,
+    today: NaiveDate,
 ) {
-    if let Some(value) = find_metric(snapshot, names) {
-        let unit = value.unit.as_deref().unwrap_or(fallback_unit);
-        label.set_text(&format!("{:.1} {unit}", value.value));
-    } else {
-        label.set_text(&format!("-- {fallback_unit}"));
+    while let Some(child) = w.monthly.first_child() {
+        w.monthly.remove(&child)
+    }
+    while month < end {
+        let next = if month.month() == 12 {
+            NaiveDate::from_ymd_opt(month.year() + 1, 1, 1).unwrap()
+        } else {
+            NaiveDate::from_ymd_opt(month.year(), month.month() + 1, 1).unwrap()
+        };
+        let t = repo
+            .period_totals(DEFAULT_VEHICLE_KEY, date_time(month), date_time(next))
+            .unwrap_or_default();
+        let row = Label::new(Some(&format!(
+            "{}    {}{}",
+            month.format("%Y-%m"),
+            if t.refuel_litres > 0.0 {
+                format!("¥{:.0}", t.fuel_cost_yen)
+            } else {
+                "データなし".into()
+            },
+            if t.pending_count > 0 {
+                "  ● 未確認"
+            } else if month.year() == today.year() && month.month() == today.month() {
+                "  集計途中"
+            } else {
+                ""
+            }
+        )));
+        row.set_halign(gtk::Align::Start);
+        row.add_css_class("monthly-row");
+        w.monthly.append(&row);
+        month = next
     }
 }
 
-fn update_last_seen_label(label: &Label, snapshot: &[RealtimeSignalState]) {
-    let latest = snapshot.iter().map(|state| state.last_seen).max();
-    if let Some(latest) = latest {
-        label.set_text(&latest.format("%H:%M:%S%.3f UTC").to_string());
-    } else {
-        label.set_text(&translate("No frames"));
+fn show_pending(path: &PathBuf, parent: &ApplicationWindow, w: &Rc<DashboardWidgets>) {
+    let repo = match VehicleDataRepository::open(path) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let rows = repo
+        .pending_candidates(DEFAULT_VEHICLE_KEY)
+        .unwrap_or_default();
+    let dialog = Dialog::builder()
+        .title("未確認の給油")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(520)
+        .build();
+    dialog.add_button("閉じる", gtk::ResponseType::Close);
+    let list = GtkBox::new(Orientation::Vertical, 10);
+    list.set_margin_top(12);
+    list.set_margin_bottom(12);
+    list.set_margin_start(12);
+    list.set_margin_end(12);
+    for candidate in rows {
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+        let text = Label::new(Some(&format!(
+            "{}  {:.1}% → {:.1}%  {}",
+            candidate
+                .detected_at
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M"),
+            candidate.before_percent,
+            candidate.after_percent,
+            candidate
+                .estimated_litres
+                .map(|v| format!("推定 {v:.1} L"))
+                .unwrap_or_else(|| "給油量を入力".into())
+        )));
+        text.set_hexpand(true);
+        text.set_halign(gtk::Align::Start);
+        let enter = Button::with_label("入力する");
+        let reject = Button::with_label("給油ではない");
+        row.append(&text);
+        row.append(&enter);
+        row.append(&reject);
+        list.append(&row);
+        enter.connect_clicked({
+            let p = path.clone();
+            let parent = parent.clone();
+            let c = candidate.clone();
+            let d = dialog.clone();
+            let w = w.clone();
+            move |_| show_confirm(&p, &parent, &c, &d, &w)
+        });
+        reject.connect_clicked({
+            let p = path.clone();
+            let id = candidate.id;
+            let row = row.clone();
+            move |_| {
+                if let Ok(r) = VehicleDataRepository::open(&p)
+                    && r.set_candidate_status(id, RefuelStatus::Rejected).is_ok()
+                {
+                    row.set_visible(false)
+                }
+            }
+        });
     }
+    dialog.content_area().append(&list);
+    dialog.connect_response(|d, _| d.close());
+    dialog.present()
 }
-
-fn update_known_signal_table(table: &Grid, snapshot: &[RealtimeSignalState]) {
-    clear_grid_rows(table);
-
-    let mut row = 1;
-    for state in snapshot.iter().filter(|state| state.is_known).take(20) {
-        for decoded in &state.decoded_values {
-            table.attach(&table_label(&decoded.name, gtk::Align::Start), 0, row, 1, 1);
-            table.attach(
-                &table_label(
-                    &format!(
-                        "{:.2}{}",
-                        decoded.value,
-                        decoded
-                            .unit
-                            .as_ref()
-                            .map(|unit| format!(" {unit}"))
-                            .unwrap_or_default()
-                    ),
-                    gtk::Align::End,
-                ),
-                1,
-                row,
-                1,
-                1,
-            );
-            table.attach(
-                &table_label(
-                    &format!("0x{:03X}", state.latest_frame.id),
-                    gtk::Align::Start,
-                ),
-                2,
-                row,
-                1,
-                1,
-            );
-            row += 1;
+fn show_confirm(
+    path: &Path,
+    parent: &ApplicationWindow,
+    c: &RefuelCandidate,
+    list_dialog: &Dialog,
+    w: &Rc<DashboardWidgets>,
+) {
+    let candidate_id = c.id;
+    let d = Dialog::builder()
+        .title("給油を確認")
+        .transient_for(parent)
+        .modal(true)
+        .build();
+    d.add_button("あとで", gtk::ResponseType::Cancel);
+    d.add_button("保存", gtk::ResponseType::Accept);
+    let form = GtkBox::new(Orientation::Vertical, 8);
+    form.set_margin_top(12);
+    form.set_margin_bottom(12);
+    form.set_margin_start(12);
+    form.set_margin_end(12);
+    form.append(&Label::new(Some(&format!(
+        "検知日時: {}",
+        c.detected_at.with_timezone(&Local).format("%Y-%m-%d %H:%M")
+    ))));
+    let litres = Entry::new();
+    litres.set_placeholder_text(Some("給油量 (L)"));
+    if let Some(v) = c.estimated_litres {
+        litres.set_text(&format!("{v:.1}"))
+    }
+    let price = Entry::new();
+    price.set_placeholder_text(Some("1Lあたりの金額 (円)"));
+    let total = Label::new(Some("合計金額は保存時に計算します"));
+    form.append(&litres);
+    form.append(&price);
+    form.append(&total);
+    d.content_area().append(&form);
+    d.connect_response({
+        let p = path.to_path_buf();
+        let w = w.clone();
+        let list = list_dialog.clone();
+        move |dialog, response| {
+            if response == gtk::ResponseType::Accept {
+                let parsed = litres
+                    .text()
+                    .parse::<f64>()
+                    .ok()
+                    .zip(price.text().parse::<f64>().ok());
+                if let Some((l, pv)) = parsed {
+                    if let Ok(mut repo) = VehicleDataRepository::open(&p) {
+                        match repo.confirm_candidate(candidate_id, l, pv) {
+                            Ok(_) => {
+                                dialog.close();
+                                list.close();
+                                refresh(&p, &w);
+                            }
+                            Err(e) => total.set_text(&e.to_string()),
+                        }
+                    }
+                } else {
+                    total.set_text("給油量と単価を数値で入力してください")
+                }
+            } else if let Ok(repo) = VehicleDataRepository::open(&p) {
+                let _ = repo.set_candidate_status(candidate_id, RefuelStatus::Deferred);
+                dialog.close()
+            }
         }
-    }
-
-    if row == 1 {
-        table.attach(
-            &table_label(
-                &translate("Waiting for decoded CAN/PID values"),
-                gtk::Align::Start,
-            ),
-            0,
-            row,
-            3,
-            1,
-        );
-    }
-}
-
-fn update_unknown_can_table(table: &Grid, snapshot: &[RealtimeSignalState]) {
-    clear_grid_rows(table);
-
-    let mut row = 1;
-    for state in snapshot.iter().filter(|state| !state.is_known).take(20) {
-        table.attach(
-            &table_label(
-                &format!("0x{:03X}", state.latest_frame.id),
-                gtk::Align::Start,
-            ),
-            0,
-            row,
-            1,
-            1,
-        );
-        table.attach(
-            &table_label(&format_payload(&state.raw_payload), gtk::Align::Start),
-            1,
-            row,
-            1,
-            1,
-        );
-        table.attach(
-            &table_label(&state.count.to_string(), gtk::Align::End),
-            2,
-            row,
-            1,
-            1,
-        );
-        row += 1;
-    }
-
-    if row == 1 {
-        table.attach(
-            &table_label(&translate("No unknown frames"), gtk::Align::Start),
-            0,
-            row,
-            3,
-            1,
-        );
-    }
-}
-
-fn clear_grid_rows(grid: &Grid) {
-    let mut child = grid.first_child();
-    while let Some(widget) = child {
-        child = widget.next_sibling();
-        if grid.child_at(0, 0).as_ref() != Some(&widget)
-            && grid.child_at(1, 0).as_ref() != Some(&widget)
-            && grid.child_at(2, 0).as_ref() != Some(&widget)
-        {
-            grid.remove(&widget);
-        }
-    }
-}
-
-fn table_label(text: &str, align: gtk::Align) -> Label {
-    let label = Label::new(Some(text));
-    label.set_halign(align);
-    label.add_css_class("table-cell");
-    label
-}
-
-fn format_payload(payload: &[u8]) -> String {
-    payload
-        .iter()
-        .map(|byte| format!("{byte:02X}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+    });
+    d.present()
 }
