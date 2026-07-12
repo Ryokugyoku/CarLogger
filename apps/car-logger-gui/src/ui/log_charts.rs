@@ -5,7 +5,8 @@ use std::rc::Rc;
 use car_logger_domain::{SignalDefinition, SignalKind};
 use car_logger_storage::StorageRepository;
 use chrono::{DateTime, Utc};
-use gtk::cairo::{Context, FontSlant, FontWeight};
+use gtk::cairo::Context;
+use gtk::pango::{EllipsizeMode, FontDescription};
 use gtk::prelude::*;
 use gtk::{
     Align, Box as GtkBox, Button, CheckButton, DrawingArea, Label, Orientation, Paned,
@@ -704,20 +705,27 @@ fn draw_chart(
     draw_text(context, &start, left, height - 22.0, 10.0);
     draw_text(context, &end, width - right - 74.0, height - 22.0, 10.0);
 
-    let mut legend_x = left;
-    let mut legend_y = height - 64.0;
+    const LEGEND_COLUMNS: usize = 2;
+    let legend_column_width = plot_width / LEGEND_COLUMNS as f64;
+    let legend_top = height - 82.0;
     for (index, item) in series.iter().take(6).enumerate() {
-        if index == 3 {
-            legend_x = left;
-            legend_y += 26.0;
-        }
+        let column = index % LEGEND_COLUMNS;
+        let row = index / LEGEND_COLUMNS;
+        let legend_x = left + column as f64 * legend_column_width;
+        let legend_y = legend_top + row as f64 * 24.0;
         context.set_source_rgb(item.color.0, item.color.1, item.color.2);
         context.rectangle(legend_x, legend_y - 8.0, 14.0, 3.0);
         let _ = context.fill();
         context.set_source_rgb(0.82, 0.87, 0.90);
         let label = series_legend_label(item, scale_mode);
-        draw_text(context, &label, legend_x + 20.0, legend_y, 10.0);
-        legend_x += 225.0;
+        draw_text_ellipsized(
+            context,
+            &label,
+            legend_x + 20.0,
+            legend_y,
+            10.0,
+            legend_column_width - 28.0,
+        );
     }
 }
 
@@ -792,10 +800,34 @@ fn draw_grid(context: &Context, left: f64, top: f64, width: f64, height: f64) {
 }
 
 fn draw_text(context: &Context, text: &str, x: f64, y: f64, size: f64) {
-    context.select_font_face("Sans", FontSlant::Normal, FontWeight::Normal);
-    context.set_font_size(size);
-    context.move_to(x, y);
-    let _ = context.show_text(text);
+    draw_text_layout(context, text, x, y, size, None);
+}
+
+fn draw_text_ellipsized(context: &Context, text: &str, x: f64, y: f64, size: f64, max_width: f64) {
+    draw_text_layout(context, text, x, y, size, Some(max_width));
+}
+
+fn draw_text_layout(
+    context: &Context,
+    text: &str,
+    x: f64,
+    y: f64,
+    size: f64,
+    max_width: Option<f64>,
+) {
+    let layout = pangocairo::functions::create_layout(context);
+    let mut font = FontDescription::from_string("Sans");
+    font.set_absolute_size(size * f64::from(gtk::pango::SCALE));
+    layout.set_font_description(Some(&font));
+    if let Some(max_width) = max_width {
+        layout.set_width((max_width.max(1.0) * f64::from(gtk::pango::SCALE)) as i32);
+        layout.set_ellipsize(EllipsizeMode::End);
+        layout.set_single_paragraph_mode(true);
+    }
+    layout.set_text(text);
+    let baseline = f64::from(layout.baseline()) / f64::from(gtk::pango::SCALE);
+    context.move_to(x, y - baseline);
+    pangocairo::functions::show_layout(context, &layout);
 }
 
 fn clear_box(container: &GtkBox) {
