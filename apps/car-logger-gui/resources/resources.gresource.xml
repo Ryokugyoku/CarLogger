@@ -12,5 +12,6 @@
     <file>icons/signals.svg</file>
     <file>icons/maintenance.svg</file>
     <file>icons/settings.svg</file>
+    <file>icons/apex-trace.svg</file>
   </gresource>
 </gresources>

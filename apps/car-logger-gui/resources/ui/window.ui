@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <interface>
   <object class="GtkApplicationWindow" id="CarLoggerWindow">
-    <property name="title">CarLogger</property>
+    <property name="title">APEX//TRACE — Local Vehicle Intelligence</property>
     <property name="default-width">1180</property>
     <property name="default-height">760</property>
     <child>
@@ -24,96 +24,57 @@
 
             <child>
               <object class="GtkBox" id="transport_header">
-                <property name="orientation">horizontal</property>
-                <property name="spacing">12</property>
+                <property name="orientation">vertical</property>
+                <property name="spacing">10</property>
                 <property name="hexpand">true</property>
                 <style>
                   <class name="transport-header"/>
                 </style>
                 <child>
-                  <object class="GtkBox">
-                    <property name="orientation">vertical</property>
-                    <property name="spacing">2</property>
+                  <object class="GtkBox" id="brand_row">
+                    <property name="orientation">horizontal</property>
+                    <property name="spacing">14</property>
                     <property name="hexpand">true</property>
                     <child>
-                      <object class="GtkLabel">
-                        <property name="label" translatable="yes">Transport</property>
-                        <property name="halign">start</property>
-                        <style>
-                          <class name="section-title"/>
-                        </style>
+                      <object class="GtkImage">
+                        <property name="resource">/com/carlogger/CarLogger/icons/apex-trace.svg</property>
+                        <property name="pixel-size">48</property>
                       </object>
                     </child>
                     <child>
-                      <object class="GtkLabel" id="lbl_transport_status">
-                        <property name="label" translatable="yes">Disconnected</property>
-                        <property name="halign">start</property>
-                        <style>
-                          <class name="muted-label"/>
-                        </style>
+                      <object class="GtkBox"><property name="orientation">vertical</property><property name="spacing">0</property>
+                        <child><object class="GtkLabel"><property name="label">APEX//TRACE</property><property name="halign">start</property><style><class name="brand-name"/></style></object></child>
+                        <child><object class="GtkLabel"><property name="label">LOCAL VEHICLE INTELLIGENCE</property><property name="halign">start</property><style><class name="brand-tagline"/></style></object></child>
                       </object>
                     </child>
-                  </object>
-                </child>
-                <child>
-                  <object class="GtkButton" id="btn_vehicle_profile">
-                    <property name="tooltip-text" translatable="yes">Edit vehicle information</property>
-                    <style><class name="vehicle-profile-button"/></style>
+                    <child><object class="GtkBox"><property name="hexpand">true</property></object></child>
+                    <child><object class="GtkLabel"><property name="label">● LIVE TELEMETRY</property><style><class name="feature-chip"/><class name="feature-live"/></style></object></child>
+                    <child><object class="GtkLabel"><property name="label">✦ AI CONDITION</property><style><class name="feature-chip"/><class name="feature-ai"/></style></object></child>
+                    <child><object class="GtkLabel"><property name="label">◆ LOCAL ONLY</property><style><class name="feature-chip"/><class name="feature-local"/></style></object></child>
                     <child>
-                      <object class="GtkBox">
-                        <property name="orientation">vertical</property>
-                        <property name="spacing">2</property>
-                        <child>
-                          <object class="GtkLabel" id="lbl_vehicle_name">
-                            <property name="label" translatable="yes">Vehicle not configured</property>
-                            <property name="halign">start</property>
-                            <style><class name="vehicle-name"/></style>
-                          </object>
-                        </child>
-                        <child>
-                          <object class="GtkLabel" id="lbl_vehicle_detail">
-                            <property name="label" translatable="yes">Click to configure</property>
-                            <property name="halign">start</property>
-                            <style><class name="muted-label"/></style>
-                          </object>
-                        </child>
+                      <object class="GtkButton" id="btn_vehicle_profile">
+                        <property name="tooltip-text" translatable="yes">Edit vehicle information</property>
+                        <style><class name="vehicle-profile-button"/></style>
+                        <child><object class="GtkBox"><property name="orientation">vertical</property><property name="spacing">1</property>
+                          <child><object class="GtkLabel" id="lbl_vehicle_name"><property name="label" translatable="yes">Vehicle not configured</property><property name="halign">start</property><style><class name="vehicle-name"/></style></object></child>
+                          <child><object class="GtkLabel" id="lbl_vehicle_detail"><property name="label" translatable="yes">Click to configure</property><property name="halign">start</property><property name="ellipsize">end</property><property name="max-width-chars">32</property><style><class name="muted-label"/></style></object></child>
+                        </object></child>
                       </object>
                     </child>
                   </object>
                 </child>
                 <child>
-                  <object class="GtkComboBoxText" id="cmb_transport_interface">
-                    <property name="width-request">250</property>
-                    <property name="active">0</property>
-                    <items>
-                      <item translatable="yes">ASC Coupler - BRZ Stream</item>
-                      <item translatable="yes">USB OBD-2 - ELM327</item>
-                      <item translatable="yes">SocketCAN - can0</item>
-                    </items>
-                    <style>
-                      <class name="header-control"/>
-                    </style>
-                  </object>
-                </child>
-                <child>
-                  <object class="GtkComboBoxText" id="cmb_transport_mode">
-                    <property name="width-request">170</property>
-                    <property name="active">0</property>
-                    <items>
-                      <item translatable="yes">Stream</item>
-                      <item translatable="yes">OBD-2</item>
-                    </items>
-                    <style>
-                      <class name="header-control"/>
-                    </style>
-                  </object>
-                </child>
-                <child>
-                  <object class="GtkButton" id="btn_transport_connect">
-                    <property name="label" translatable="yes">Connect</property>
-                    <style>
-                      <class name="connect-button"/>
-                    </style>
+                  <object class="GtkBox" id="connection_deck">
+                    <property name="orientation">horizontal</property><property name="spacing">10</property><property name="hexpand">true</property>
+                    <child><object class="GtkBox"><property name="orientation">vertical</property><property name="spacing">1</property><property name="hexpand">true</property>
+                      <child><object class="GtkLabel"><property name="label">CONNECTION DECK</property><property name="halign">start</property><style><class name="deck-label"/></style></object></child>
+                      <child><object class="GtkLabel" id="lbl_transport_status"><property name="label" translatable="yes">Disconnected</property><property name="halign">start</property><property name="ellipsize">end</property><style><class name="connection-status"/></style></object></child>
+                    </object></child>
+                    <child><object class="GtkLabel"><property name="label">INTERFACE</property><style><class name="control-caption"/></style></object></child>
+                    <child><object class="GtkComboBoxText" id="cmb_transport_interface"><property name="width-request">250</property><property name="active">0</property><items><item translatable="yes">ASC Coupler - BRZ Stream</item><item translatable="yes">USB OBD-2 - ELM327</item><item translatable="yes">SocketCAN - can0</item></items><style><class name="header-control"/></style></object></child>
+                    <child><object class="GtkLabel"><property name="label">MODE</property><style><class name="control-caption"/></style></object></child>
+                    <child><object class="GtkComboBoxText" id="cmb_transport_mode"><property name="width-request">140</property><property name="active">0</property><items><item translatable="yes">Stream</item><item translatable="yes">OBD-2</item></items><style><class name="header-control"/></style></object></child>
+                    <child><object class="GtkButton" id="btn_transport_connect"><property name="label" translatable="yes">Connect</property><style><class name="connect-button"/></style></object></child>
                   </object>
                 </child>
               </object>
