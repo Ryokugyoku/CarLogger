@@ -58,7 +58,7 @@
                     </object></child>
                     <child><object class="GtkBox"><property name="orientation">vertical</property><property name="spacing">8</property><layout><property name="column">1</property><property name="row">2</property></layout><style><class name="offline-card"/><class name="offline-connect-card"/></style>
                       <child><object class="GtkLabel"><property name="label" translatable="yes">READY TO CONNECT</property><property name="halign">start</property><style><class name="dashboard-section-title"/></style></object></child>
-                      <child><object class="GtkLabel"><property name="label" translatable="yes">Select an interface in the connection deck above, then press Connect.</property><property name="halign">start</property><property name="wrap">true</property><style><class name="offline-card-primary"/></style></object></child>
+                      <child><object class="GtkLabel"><property name="label" translatable="yes">Choose an interface in the connection panel, then press Connect.</property><property name="halign">start</property><property name="wrap">true</property><style><class name="offline-card-primary"/></style></object></child>
                     </object></child>
                   </object>
                 </child>

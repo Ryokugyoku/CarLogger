@@ -77,11 +77,11 @@
 .transport-header {
     background: linear-gradient(110deg, #0b1117, #101b25 58%, #111627);
     border-bottom: 1px solid #294150;
-    padding: 11px 18px 12px 18px;
+    padding: 9px 18px;
     box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
 }
 
-.brand-name { color: #f2fbff; font-size: 19pt; font-weight: 900; letter-spacing: 1.8px; }
+.brand-name { color: #f2fbff; font-size: 17pt; font-weight: 900; letter-spacing: 1.8px; }
 .brand-tagline { color: #58dff5; font-size: 7.5pt; font-weight: 800; letter-spacing: 2.3px; }
 .feature-chip { border-radius: 999px; padding: 5px 9px; font-size: 8pt; font-weight: 800; }
 .feature-live { color: #5cf0be; background: #112b25; border: 1px solid #235d4e; }
@@ -89,6 +89,19 @@
 .feature-local { color: #aabaff; background: #1b2038; border: 1px solid #3b466f; }
 .deck-label, .control-caption { color: #697e8b; font-size: 7.5pt; font-weight: 900; letter-spacing: 1.4px; }
 .connection-status { color: #d7e5eb; font-size: 9.5pt; font-weight: 700; }
+.connection-indicator { color: #778b96; font-size: 10pt; }
+
+.home-connection-panel {
+    margin: 18px 22px 0 22px;
+    padding: 16px 18px;
+    border: 1px solid #315162;
+    border-left: 3px solid #00c28e;
+    border-radius: 14px;
+    background: linear-gradient(120deg, #111c24, #151c28);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+}
+
+.home-connection-panel .deck-label { color: #67e6c1; }
 
 .vehicle-profile-button {
     background: linear-gradient(120deg, #17242d, #162033);
@@ -107,6 +120,7 @@
     border: 1px solid #343d47;
     border-radius: 8px;
     min-height: 38px;
+    padding: 0 8px;
 }
 
 .connect-button {
