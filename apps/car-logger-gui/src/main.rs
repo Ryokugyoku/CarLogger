@@ -37,6 +37,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const APPLICATION_ID: &str = "com.carlogger.CarLogger";
+const APPLICATION_NAME: &str = "APEX//TRACE";
+const APPLICATION_ICON_NAME: &str = "apex-trace";
 
 /// アプリケーションのエントリーポイント。
 ///
@@ -69,12 +71,17 @@ fn main() {
     gio::resources_register_include!("car-logger.gresource")
         .expect("Failed to register resources.");
 
+    glib::set_application_name(APPLICATION_NAME);
+
     let application = Application::builder()
         .application_id(APPLICATION_ID)
         .build();
     let inhibit_cookie = Rc::new(Cell::new(None));
 
     application.connect_startup(|_| {
+        let display = gtk::gdk::Display::default().expect("Could not connect to a display.");
+        gtk::IconTheme::for_display(&display).add_resource_path("/com/carlogger/CarLogger/icons");
+        gtk::Window::set_default_icon_name(APPLICATION_ICON_NAME);
         load_css();
     });
 
@@ -147,12 +154,13 @@ fn build_ui(
         .object("CarLoggerWindow")
         .expect("Could not find CarLoggerWindow");
     window.set_application(Some(application));
+    window.set_icon_name(Some(APPLICATION_ICON_NAME));
 
     if inhibit_cookie.get().is_none() {
         let cookie = application.inhibit(
             Some(&window),
             gtk::ApplicationInhibitFlags::IDLE | gtk::ApplicationInhibitFlags::SUSPEND,
-            Some("Car Logger is running"),
+            Some("APEX//TRACE is running"),
         );
         if cookie == 0 {
             tracing::warn!("The system did not accept the sleep inhibition request");
