@@ -8,8 +8,11 @@ publish.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+chrono.workspace = true
+serde.workspace = true
 
 car-logger-domain = { path = "../domain" }
+car-logger-health = { path = "../health" }
 
 [lints]
 workspace = true

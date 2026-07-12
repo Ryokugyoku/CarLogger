@@ -59,7 +59,7 @@ impl DuckdbCanFrameRepository {
         self.read_only
     }
 
-    fn initialize(&self) -> Result<()> {
+    pub(crate) fn initialize(&self) -> Result<()> {
         self.connection
             .execute_batch(
                 r#"
@@ -90,11 +90,63 @@ impl DuckdbCanFrameRepository {
 
                 CREATE INDEX IF NOT EXISTS idx_can_frames_received_at
                     ON can_frames(received_at);
+
+                CREATE SEQUENCE IF NOT EXISTS driving_sessions_sequence;
+                CREATE TABLE IF NOT EXISTS driving_sessions (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('driving_sessions_sequence'),
+                    started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
+                    sample_count UBIGINT NOT NULL, complete BOOLEAN NOT NULL,
+                    algorithm_version TEXT NOT NULL,
+                    UNIQUE(started_at, ended_at, algorithm_version)
+                );
+                CREATE SEQUENCE IF NOT EXISTS health_score_periods_sequence;
+                CREATE TABLE IF NOT EXISTS health_score_periods (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('health_score_periods_sequence'),
+                    granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+                    overall_score DOUBLE, confidence DOUBLE NOT NULL, status TEXT NOT NULL,
+                    session_count UINTEGER NOT NULL, evaluated_seconds DOUBLE NOT NULL,
+                    sample_count UBIGINT NOT NULL, data_coverage DOUBLE NOT NULL,
+                    algorithm_version TEXT NOT NULL, baseline_version TEXT NOT NULL,
+                    feature_schema_version TEXT NOT NULL, calculated_at TEXT NOT NULL,
+                    UNIQUE(granularity, period_start, period_end, algorithm_version, baseline_version, feature_schema_version)
+                );
+                CREATE TABLE IF NOT EXISTS health_score_components (
+                    score_id BIGINT NOT NULL, domain TEXT NOT NULL, score DOUBLE,
+                    confidence DOUBLE NOT NULL, coverage DOUBLE NOT NULL,
+                    PRIMARY KEY(score_id, domain)
+                );
+                CREATE SEQUENCE IF NOT EXISTS health_score_reasons_sequence;
+                CREATE TABLE IF NOT EXISTS health_score_reasons (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('health_score_reasons_sequence'),
+                    score_id BIGINT NOT NULL, domain TEXT NOT NULL, feature TEXT NOT NULL,
+                    impact DOUBLE NOT NULL, message TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS health_session_features (
+                    session_id BIGINT NOT NULL, signal_key TEXT NOT NULL, driving_state TEXT NOT NULL,
+                    mean DOUBLE NOT NULL, deviation DOUBLE NOT NULL, sample_count UBIGINT NOT NULL,
+                    duration_seconds DOUBLE NOT NULL, feature_schema_version TEXT NOT NULL,
+                    PRIMARY KEY(session_id, signal_key, driving_state, feature_schema_version)
+                );
+                CREATE TABLE IF NOT EXISTS health_baselines (
+                    version TEXT PRIMARY KEY, algorithm_version TEXT NOT NULL,
+                    feature_schema_version TEXT NOT NULL, valid_session_count UINTEGER NOT NULL,
+                    total_seconds DOUBLE NOT NULL, window_start TEXT, window_end TEXT,
+                    baseline_json TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS health_backfill_state (
+                    operation TEXT PRIMARY KEY, last_sequence_id BIGINT NOT NULL,
+                    total_rows UBIGINT NOT NULL, processed_rows UBIGINT NOT NULL,
+                    completed BOOLEAN NOT NULL, updated_at TEXT NOT NULL
+                );
                 "#,
             )
             .context("DuckDBログスキーマの初期化に失敗しました")?;
 
         Ok(())
+    }
+
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.connection
     }
 
     pub fn list_observations(&self, kind: SignalKind) -> Result<Vec<CanIdObservation>> {

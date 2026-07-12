@@ -186,6 +186,7 @@ impl CanIdManagerView {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn refresh_lists(
     known_list: &GtkBox,
     unknown_list: &GtkBox,
@@ -263,6 +264,7 @@ fn refresh_lists(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn known_row(
     definition: SignalDefinition,
     repository: Rc<StorageRepository>,
@@ -337,6 +339,7 @@ fn known_row(
     row
 }
 
+#[allow(clippy::too_many_arguments)]
 fn unknown_row(
     observation: CanIdObservation,
     repository: Rc<StorageRepository>,

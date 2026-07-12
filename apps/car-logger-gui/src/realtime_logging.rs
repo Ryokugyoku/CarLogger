@@ -92,10 +92,9 @@ fn run_realtime_logging(
     let mut repository = match DuckdbCanFrameRepository::open(&log_database_path) {
         Ok(repository) => repository,
         Err(error) => {
-            let _ = events.send(RealtimeLoggingEvent::SaveError(format!(
-                "{}",
-                format_duckdb_write_open_error(&log_database_path, &error)
-            )));
+            let _ = events.send(RealtimeLoggingEvent::SaveError(
+                format_duckdb_write_open_error(&log_database_path, &error).to_string(),
+            ));
             let _ = events.send(RealtimeLoggingEvent::Stopped);
             return;
         }

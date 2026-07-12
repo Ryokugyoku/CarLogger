@@ -385,6 +385,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "car-logger-domain",
+ "car-logger-health",
+ "chrono",
+ "serde",
  "thiserror",
  "tracing",
 ]
@@ -420,15 +423,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "car-logger-health"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+]
+
+[[package]]
 name = "car-logger-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "car-logger-application",
  "car-logger-domain",
+ "car-logger-health",
  "chrono",
  "duckdb",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tracing",

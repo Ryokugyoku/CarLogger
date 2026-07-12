@@ -1,5 +1,6 @@
 mod builtin_signals;
 pub mod duckdb;
+mod health;
 mod paths;
 mod repository;
 pub mod sqlite;
