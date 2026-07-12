@@ -8,3 +8,7 @@
 *.db-wal
 /logs/
 /car-logger.duckdb
+/car-logger.duckdb-wal
+/car-logger.db
+/car-logger.db-shm
+/car-logger.db-wal
