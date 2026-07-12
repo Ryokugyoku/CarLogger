@@ -8,11 +8,13 @@ mod health;
 mod learning;
 mod paths;
 mod repository;
+mod retention;
 pub mod sqlite;
 
 pub use duckdb::DuckdbCanFrameRepository;
 pub use repository::StorageRepository;
 pub use repository::VehicleProfile;
+pub use retention::{LogCompactionReport, LogRetentionPolicy};
 pub use sqlite::SqliteMasterRepository;
 
 #[deprecated(

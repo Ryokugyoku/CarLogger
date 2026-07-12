@@ -251,29 +251,38 @@ impl HealthScoreRepository for DuckdbCanFrameRepository {
     fn backfill(&mut self, chunk_size: usize) -> Result<HealthProgress> {
         self.writable()?;
         ensure!(chunk_size > 0, "chunk_sizeは1以上が必要です");
-        let last = self
-            .health_progress()?
-            .filter(|p| p.operation == "backfill" && !p.completed)
-            .map(|p| p.last_sequence_id)
-            .unwrap_or(0);
-        let total: i64 = self.connection().query_row(
-            "SELECT count(*) FROM can_frames WHERE signal_type='PID'",
+        let previous = self.connection().query_row(
+            "SELECT last_sequence_id,total_rows,processed_rows,completed FROM health_backfill_state WHERE operation='backfill'",
             [],
-            |r| r.get(0),
-        )?;
-        let mut st=self.connection().prepare("SELECT sequence_id,can_id,data,received_at FROM can_frames WHERE signal_type='PID' AND sequence_id>?1 ORDER BY sequence_id LIMIT ?2")?;
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u64>(1)?, r.get::<_, u64>(2)?, r.get::<_, bool>(3)?)),
+        ).ok();
+        let (last, mut total, processed_before, was_completed) =
+            previous.unwrap_or((0, 0, 0, true));
+        // Counting is needed only when a new processing cycle starts. During a
+        // chunked run, progress advances arithmetically without rescanning raw logs.
+        if was_completed {
+            let pending: u64 = self.connection().query_row(
+                "SELECT count(*) FROM can_frames WHERE signal_type='PID' AND sequence_id>?1",
+                params![last],
+                |r| r.get(0),
+            )?;
+            total = processed_before.saturating_add(pending);
+        }
+        let mut st=self.connection().prepare("SELECT sequence_id,can_id,data,epoch_us(received_at) FROM can_frames WHERE signal_type='PID' AND sequence_id>?1 ORDER BY sequence_id LIMIT ?2")?;
         let rows = st.query_map(params![last, chunk_size as i64], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, u32>(1)?,
                 r.get::<_, Vec<u8>>(2)?,
-                r.get::<_, String>(3)?,
+                r.get::<_, i64>(3)?,
             ))
         })?;
         let rows = rows.collect::<duckdb::Result<Vec<_>>>()?;
         let mut samples = Vec::new();
         for (_, pid, data, at) in &rows {
-            if let Some(s) = decode_standard_pid(*pid, data, parse_time(at.clone())?) {
+            let at = DateTime::from_timestamp_micros(*at)
+                .ok_or_else(|| anyhow::anyhow!("PIDログの日時が範囲外です: {at}"))?;
+            if let Some(s) = decode_standard_pid(*pid, data, at) {
                 samples.push(s)
             }
         }
@@ -287,11 +296,8 @@ impl HealthScoreRepository for DuckdbCanFrameRepository {
             self.persist_session(&session, &ss)?
         }
         let new_last = rows.last().map(|r| r.0).unwrap_or(last);
-        let processed: i64 = self.connection().query_row(
-            "SELECT count(*) FROM can_frames WHERE signal_type='PID' AND sequence_id<=?1",
-            params![new_last],
-            |r| r.get(0),
-        )?;
+        let processed = processed_before.saturating_add(rows.len() as u64);
+        total = total.max(processed);
         let completed = rows.len() < chunk_size;
         self.connection().execute(
             "INSERT OR REPLACE INTO health_backfill_state VALUES('backfill',?1,?2,?3,?4,?5)",
@@ -303,8 +309,8 @@ impl HealthScoreRepository for DuckdbCanFrameRepository {
         Ok(HealthProgress {
             operation: "backfill".into(),
             last_sequence_id: new_last,
-            total_rows: total as u64,
-            processed_rows: processed as u64,
+            total_rows: total,
+            processed_rows: processed,
             completed,
             updated_at: now,
         })
@@ -483,6 +489,30 @@ mod tests {
                     .get::<_, i64>(0))
                 .unwrap()
         );
+    }
+    #[test]
+    fn completed_backfill_resumes_from_its_checkpoint_when_new_frames_arrive() {
+        let mut r = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let first = CanFrame {
+            received_at: Utc::now() - Duration::seconds(2),
+            ..CanFrame::new(0x0c, false, false, vec![0x0c, 0x80])
+        };
+        r.save_with_kind(SignalKind::Pid, &first).unwrap();
+        let first_progress = r.backfill(10).unwrap();
+        assert!(first_progress.completed);
+        assert_eq!(first_progress.processed_rows, 1);
+
+        let second = CanFrame {
+            received_at: Utc::now() - Duration::seconds(1),
+            ..CanFrame::new(0x0c, false, false, vec![0x0d, 0x00])
+        };
+        r.save_with_kind(SignalKind::Pid, &second).unwrap();
+        let resumed = r.backfill(10).unwrap();
+
+        assert!(resumed.completed);
+        assert_eq!(resumed.processed_rows, 2);
+        assert_eq!(resumed.total_rows, 2);
+        assert!(resumed.last_sequence_id > first_progress.last_sequence_id);
     }
     #[test]
     fn read_only_rejects_writes() {

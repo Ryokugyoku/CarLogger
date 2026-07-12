@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use car_logger_application::CanFrameRepository;
 use car_logger_domain::{CanFrame, CanIdObservation, SignalDefinition, SignalKind};
+use chrono::{DateTime, Utc};
 
 use crate::duckdb::DuckdbCanFrameRepository;
+use crate::retention::{LogCompactionReport, LogRetentionPolicy};
 use crate::sqlite::SqliteMasterRepository;
 pub use crate::sqlite::VehicleProfile;
 
@@ -129,6 +131,19 @@ impl StorageRepository {
 
     pub fn list_recent_log_frames(&self, limit: u32) -> Result<Vec<CanFrame>> {
         self.log.list_recent_frames(limit)
+    }
+
+    /// Runs one bounded maintenance pass using the configured raw-log lifetime.
+    pub fn compact_logs(
+        &mut self,
+        now: DateTime<Utc>,
+        policy: LogRetentionPolicy,
+    ) -> Result<LogCompactionReport> {
+        self.log.compact_logs(now, policy)
+    }
+
+    pub fn checkpoint_logs(&self) -> Result<()> {
+        self.log.checkpoint()
     }
 }
 

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use car_logger_application::CanFrameRepository;
 use car_logger_domain::{CanFrame, CanIdObservation, SignalKind};
 use duckdb::{AccessMode, Config, Connection, params};
@@ -8,8 +8,8 @@ use duckdb::{AccessMode, Config, Connection, params};
 use crate::paths::ensure_parent_directory;
 
 pub struct DuckdbCanFrameRepository {
-    connection: Connection,
-    read_only: bool,
+    pub(crate) connection: Connection,
+    pub(crate) read_only: bool,
 }
 
 impl DuckdbCanFrameRepository {
@@ -59,7 +59,21 @@ impl DuckdbCanFrameRepository {
         self.read_only
     }
 
+    /// Flushes committed changes into the DuckDB file after a maintenance run.
+    /// This is intentionally explicit because checkpointing during live capture
+    /// would add latency to the logging hot path.
+    pub fn checkpoint(&self) -> Result<()> {
+        anyhow::ensure!(
+            !self.read_only,
+            "DuckDBログは読み取り専用のためチェックポイントできません"
+        );
+        self.connection
+            .execute_batch("CHECKPOINT")
+            .context("DuckDBログのチェックポイントに失敗しました")
+    }
+
     pub(crate) fn initialize(&self) -> Result<()> {
+        self.initialize_log_tables()?;
         self.connection
             .execute_batch(
                 r#"
@@ -72,7 +86,7 @@ impl DuckdbCanFrameRepository {
                     is_extended BOOLEAN NOT NULL,
                     is_remote BOOLEAN NOT NULL,
                     data BLOB NOT NULL,
-                    received_at TEXT NOT NULL
+                    received_at TIMESTAMPTZ NOT NULL
                 );
 
                 ALTER TABLE can_frames
@@ -90,6 +104,29 @@ impl DuckdbCanFrameRepository {
 
                 CREATE INDEX IF NOT EXISTS idx_can_frames_received_at
                     ON can_frames(received_at);
+
+                CREATE INDEX IF NOT EXISTS idx_can_frames_retention
+                    ON can_frames(signal_type, received_at, sequence_id);
+
+                CREATE TABLE IF NOT EXISTS can_frame_seconds (
+                    signal_type TEXT NOT NULL,
+                    can_id UBIGINT NOT NULL,
+                    is_extended BOOLEAN NOT NULL,
+                    is_remote BOOLEAN NOT NULL,
+                    bucket_epoch BIGINT NOT NULL,
+                    first_data BLOB NOT NULL,
+                    last_data BLOB NOT NULL,
+                    min_data BLOB NOT NULL,
+                    max_data BLOB NOT NULL,
+                    frame_count UBIGINT NOT NULL,
+                    change_count UBIGINT NOT NULL,
+                    first_received_at TIMESTAMPTZ NOT NULL,
+                    last_received_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY(signal_type, can_id, is_extended, is_remote, bucket_epoch)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_can_frame_seconds_last_seen
+                    ON can_frame_seconds(last_received_at);
 
                 CREATE SEQUENCE IF NOT EXISTS driving_sessions_sequence;
                 CREATE TABLE IF NOT EXISTS driving_sessions (
@@ -258,6 +295,91 @@ impl DuckdbCanFrameRepository {
         Ok(())
     }
 
+    fn initialize_log_tables(&self) -> Result<()> {
+        self.connection.execute_batch(
+            r#"
+            CREATE SEQUENCE IF NOT EXISTS can_frames_sequence;
+            CREATE TABLE IF NOT EXISTS can_frames (
+                sequence_id BIGINT PRIMARY KEY DEFAULT nextval('can_frames_sequence'),
+                signal_type TEXT NOT NULL DEFAULT 'PID',
+                can_id UBIGINT NOT NULL,
+                is_extended BOOLEAN NOT NULL,
+                is_remote BOOLEAN NOT NULL,
+                data BLOB NOT NULL,
+                received_at TIMESTAMPTZ NOT NULL
+            );
+            ALTER TABLE can_frames ADD COLUMN IF NOT EXISTS signal_type TEXT DEFAULT 'PID';
+            UPDATE can_frames SET signal_type='PID' WHERE signal_type IS NULL OR signal_type='';
+
+            CREATE TABLE IF NOT EXISTS can_frame_seconds (
+                signal_type TEXT NOT NULL,
+                can_id UBIGINT NOT NULL,
+                is_extended BOOLEAN NOT NULL,
+                is_remote BOOLEAN NOT NULL,
+                bucket_epoch BIGINT NOT NULL,
+                first_data BLOB NOT NULL,
+                last_data BLOB NOT NULL,
+                min_data BLOB NOT NULL,
+                max_data BLOB NOT NULL,
+                frame_count UBIGINT NOT NULL,
+                change_count UBIGINT NOT NULL,
+                first_received_at TIMESTAMPTZ NOT NULL,
+                last_received_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY(signal_type, can_id, is_extended, is_remote, bucket_epoch)
+            );
+            "#,
+        )?;
+        self.migrate_timestamp_column(
+            "can_frames",
+            "received_at",
+            &[
+                "idx_can_frames_can_id",
+                "idx_can_frames_signal_lookup",
+                "idx_can_frames_received_at",
+                "idx_can_frames_retention",
+            ],
+        )?;
+        self.migrate_timestamp_column(
+            "can_frame_seconds",
+            "first_received_at",
+            &["idx_can_frame_seconds_last_seen"],
+        )?;
+        self.migrate_timestamp_column(
+            "can_frame_seconds",
+            "last_received_at",
+            &["idx_can_frame_seconds_last_seen"],
+        )?;
+        Ok(())
+    }
+
+    fn migrate_timestamp_column(
+        &self,
+        table: &'static str,
+        column: &'static str,
+        dependent_indexes: &[&'static str],
+    ) -> Result<()> {
+        let data_type: String = self.connection.query_row(
+            "SELECT data_type FROM information_schema.columns WHERE table_name=?1 AND column_name=?2",
+            params![table, column],
+            |row| row.get(0),
+        )?;
+        if data_type == "TIMESTAMP WITH TIME ZONE" {
+            return Ok(());
+        }
+        ensure!(
+            matches!(data_type.as_str(), "VARCHAR" | "TEXT"),
+            "未対応の日時列型です: {table}.{column}={data_type}"
+        );
+        for index in dependent_indexes {
+            self.connection
+                .execute_batch(&format!("DROP INDEX IF EXISTS {index}"))?;
+        }
+        self.connection.execute_batch(&format!(
+            "ALTER TABLE {table} ALTER {column} TYPE TIMESTAMPTZ USING CAST({column} AS TIMESTAMPTZ)"
+        ))?;
+        Ok(())
+    }
+
     pub(crate) fn connection(&self) -> &Connection {
         &self.connection
     }
@@ -265,28 +387,34 @@ impl DuckdbCanFrameRepository {
     pub fn list_observations(&self, kind: SignalKind) -> Result<Vec<CanIdObservation>> {
         let mut statement = self.connection.prepare(
             r#"
-            SELECT
-                latest.can_id,
-                latest.data,
-                latest.received_at,
-                counts.frame_count
-            FROM (
-                SELECT can_id, COUNT(*) AS frame_count, MAX(sequence_id) AS latest_sequence_id
+            WITH observations AS (
+                SELECT can_id, data AS payload, received_at, 1::UBIGINT AS frame_count
                 FROM can_frames
                 WHERE signal_type = ?1
+                UNION ALL
+                SELECT can_id, last_data AS payload, last_received_at AS received_at, frame_count
+                FROM can_frame_seconds
+                WHERE signal_type = ?1
+            ), totals AS (
+                SELECT
+                    can_id,
+                    SUM(frame_count) AS frame_count,
+                    arg_max(payload, received_at) AS payload,
+                    MAX(received_at) AS received_at
+                FROM observations
                 GROUP BY can_id
-            ) counts
-            JOIN can_frames latest
-                ON latest.sequence_id = counts.latest_sequence_id
-            ORDER BY latest.can_id
+            )
+            SELECT
+                can_id, payload, epoch_us(received_at), frame_count
+            FROM totals
+            ORDER BY can_id
             "#,
         )?;
 
         let rows = statement.query_map(params![kind.as_str()], |row| {
-            let received_at: String = row.get(2)?;
-            let last_seen = chrono::DateTime::parse_from_rfc3339(&received_at)
-                .map(|datetime| datetime.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
+            let received_at_micros: i64 = row.get(2)?;
+            let last_seen = chrono::DateTime::from_timestamp_micros(received_at_micros)
+                .unwrap_or_else(chrono::Utc::now);
 
             Ok(CanIdObservation {
                 id: row.get(0)?,
@@ -307,7 +435,7 @@ impl DuckdbCanFrameRepository {
     pub fn list_recent_frames(&self, limit: u32) -> Result<Vec<CanFrame>> {
         let mut statement = self.connection.prepare(
             r#"
-            SELECT can_id, is_extended, is_remote, data, received_at
+            SELECT can_id, is_extended, is_remote, data, epoch_us(received_at)
             FROM (
                 SELECT sequence_id, can_id, is_extended, is_remote, data, received_at
                 FROM can_frames
@@ -319,10 +447,9 @@ impl DuckdbCanFrameRepository {
         )?;
 
         let rows = statement.query_map(params![limit], |row| {
-            let received_at: String = row.get(4)?;
-            let received_at = chrono::DateTime::parse_from_rfc3339(&received_at)
-                .map(|datetime| datetime.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
+            let received_at_micros: i64 = row.get(4)?;
+            let received_at = chrono::DateTime::from_timestamp_micros(received_at_micros)
+                .unwrap_or_else(chrono::Utc::now);
 
             Ok(CanFrame {
                 id: row.get(0)?,
@@ -439,6 +566,7 @@ mod tests {
         let mut repo = DuckdbCanFrameRepository::open(&db_path).expect("Should open/create DB");
         repo.save(&CanFrame::new(0x123, false, false, vec![0x10, 0x20]))
             .unwrap();
+        repo.checkpoint().unwrap();
 
         assert!(db_path.parent().unwrap().exists());
         assert!(db_path.exists());
@@ -511,6 +639,15 @@ mod tests {
         assert_eq!(pid_observations.len(), 1);
         assert_eq!(pid_observations[0].id, 0x2F);
         assert!(can_observations.is_empty());
+        let timestamp_type: String = repo
+            .connection()
+            .query_row(
+                "SELECT data_type FROM information_schema.columns WHERE table_name='can_frames' AND column_name='received_at'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(timestamp_type, "TIMESTAMP WITH TIME ZONE");
     }
 
     #[test]
