@@ -99,7 +99,14 @@ jobs:
           "PKG_CONFIG_PATH=C:\tools\msys64\mingw64\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Inject release version without a release commit
         shell: bash
-        run: sed -i.bak 's/^version = "[0-9][0-9.]*"/version = "${{ needs.version.outputs.version }}"/' Cargo.toml && rm Cargo.toml.bak
+        run: |
+          sed -i.bak 's/^version = "[0-9][0-9.]*"/version = "${{ needs.version.outputs.version }}"/' Cargo.toml
+          rm Cargo.toml.bak
+          # Version injection changes every workspace package's lockfile entry.
+          # Let Cargo synchronize only those root-package versions, then prove
+          # the following build can run with --locked.
+          cargo metadata --format-version 1 > /dev/null
+          cargo metadata --format-version 1 --locked > /dev/null
       - name: Build runtime
         shell: bash
         env:
