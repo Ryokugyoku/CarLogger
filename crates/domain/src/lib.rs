@@ -155,4 +155,8 @@ impl RealtimeState {
         rows.sort_by_key(|(id, _)| *id);
         rows
     }
+
+    pub fn clear(&self) {
+        self.signals.clear();
+    }
 }

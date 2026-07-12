@@ -33,7 +33,10 @@ use gtk::{
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 const APPLICATION_ID: &str = "com.carlogger.CarLogger";
@@ -197,12 +200,14 @@ fn build_ui(
         .expect("Could not find main_surface");
     setup_ambient_background(&main_surface);
     let realtime_state = Arc::new(RealtimeState::new());
+    let is_connected = Arc::new(AtomicBool::new(false));
     setup_transport_header(
         &builder,
         &window,
         repository.clone(),
         config::log_database_path(&database_path),
         realtime_state.clone(),
+        is_connected.clone(),
     );
     let dashboard_builder = gtk::Builder::from_resource("/com/carlogger/CarLogger/ui/dashboard.ui");
     let dashboard_view: gtk::ScrolledWindow = dashboard_builder
@@ -213,6 +218,8 @@ fn build_ui(
         &dashboard_builder,
         realtime_state,
         translation_manager.clone(),
+        config::log_database_path(&database_path),
+        is_connected,
     );
 
     // 各ページのタイトルラベルを登録（window.ui内）
@@ -298,6 +305,7 @@ fn setup_transport_header(
     repository: Option<Rc<StorageRepository>>,
     log_database_path: PathBuf,
     realtime_state: Arc<RealtimeState>,
+    is_connected: Arc<AtomicBool>,
 ) {
     let interface_combo: ComboBoxText = builder
         .object("cmb_transport_interface")
@@ -365,6 +373,10 @@ fn setup_transport_header(
             status_label,
             #[strong]
             active_session,
+            #[strong]
+            is_connected,
+            #[strong]
+            realtime_state,
             move || {
                 for event in event_receiver.try_iter() {
                     match event {
@@ -386,6 +398,8 @@ fn setup_transport_header(
                         }
                         RealtimeLoggingEvent::Stopped => {
                             active_session.replace(None);
+                            is_connected.store(false, Ordering::Relaxed);
+                            realtime_state.clear();
                             connect_button.set_label("Connect");
                             status_label.set_text("Disconnected");
                         }
@@ -416,10 +430,13 @@ fn setup_transport_header(
         log_database_path,
         #[strong]
         realtime_state,
+        #[strong]
+        is_connected,
         #[weak]
         window,
         move |_| {
             if let Some(session) = active_session.borrow_mut().take() {
+                is_connected.store(false, Ordering::Relaxed);
                 session.request_stop();
                 connect_button.set_label("Stopping...");
                 status_label.set_text("Disconnecting...");
@@ -474,11 +491,13 @@ fn setup_transport_header(
                         event_sender.clone(),
                     );
                     active_session.replace(Some(session));
+                    is_connected.store(true, Ordering::Relaxed);
                     connect_button.set_label("Disconnect");
                     status_label.set_text(&format!("Connected: {interface_label} / {mode_label}"));
                 }
                 Err(error) => {
                     active_session.replace(None);
+                    is_connected.store(false, Ordering::Relaxed);
                     connect_button.set_label("Connect");
                     status_label.set_text(&format!("Connection failed: {error}"));
                 }

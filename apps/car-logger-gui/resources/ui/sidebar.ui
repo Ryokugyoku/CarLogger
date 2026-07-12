@@ -136,7 +136,7 @@
             <property name="spacing">10</property>
             <child>
               <object class="GtkImage">
-                <property name="resource">/com/carlogger/CarLogger/icons/maintenance.svg</property>
+                <property name="resource">/com/carlogger/CarLogger/icons/health-ai.png</property>
                 <property name="pixel-size">24</property>
               </object>
             </child>

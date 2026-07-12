@@ -156,8 +156,32 @@
 .ai-condition-root button:focus { outline: 2px solid #51d9f5; outline-offset: 2px; }
 
 .dashboard-root {
-    padding: 22px 24px 30px 24px;
+    padding: 18px 22px 28px 22px;
 }
+
+.offline-hero {
+    padding: 22px 24px;
+    border-radius: 18px;
+    border: 1px solid #28536d;
+    border-left: 3px solid #28e1ff;
+    background: radial-gradient(circle farthest-corner at 88% 10%, rgba(85, 124, 255, 0.17), transparent 42%), linear-gradient(120deg, #0c1925, #131a29);
+}
+
+.offline-card {
+    min-height: 132px;
+    padding: 18px;
+    border: 1px solid #2b3d4b;
+    border-radius: 14px;
+    background: linear-gradient(145deg, #171e26, #15191f);
+}
+.offline-health-card { border-top: 3px solid #28e1ff; }
+.offline-diagnostic-card { border-top: 3px solid #557cff; }
+.offline-learning-card { border-left: 3px solid #ffd166; }
+.offline-connect-card { border-left: 3px solid #00c28e; }
+.offline-score { color: #73edff; font-size: 42pt; font-weight: 900; }
+.offline-card-primary { color: #e8f5f8; font-size: 12pt; font-weight: 800; }
+.offline-domain-score { color: #f5fbff; font-size: 23pt; font-weight: 900; }
+.offline-note { color: #7f929e; font-size: 8.5pt; }
 
 .dashboard-hero {
     border-radius: 18px;
@@ -169,13 +193,13 @@
 .dashboard-hero picture { border-radius: 18px; }
 
 .hero-copy {
-    padding: 20px 24px;
+    padding: 14px 20px;
     border-left: 3px solid #28e1ff;
     background: linear-gradient(90deg, rgba(5, 13, 23, 0.88), rgba(5, 13, 23, 0.34));
 }
 
 .hero-eyebrow { color: #56def5; font-size: 8pt; font-weight: 900; letter-spacing: 2.6px; }
-.hero-title { color: #f5fbff; font-size: 30pt; font-weight: 900; letter-spacing: -0.6px; }
+.hero-title { color: #f5fbff; font-size: 26pt; font-weight: 900; letter-spacing: -0.5px; }
 .hero-subtitle { color: #a8c6d7; font-size: 11pt; font-weight: 600; }
 
 .title-label {
@@ -250,6 +274,10 @@
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
 }
 
+.dashboard-card:focus-within {
+    border-color: #3f718a;
+}
+
 .engine-card {
     background: radial-gradient(circle farthest-corner at 24% 58%, rgba(40, 225, 255, 0.11), transparent 44%),
                 linear-gradient(135deg, #17252d, #151a23);
@@ -290,6 +318,15 @@
     color: #ffffff;
     font-size: 20pt;
     font-weight: 900;
+}
+
+.primary-metric-value {
+    color: #f4fdff;
+    font-size: 23pt;
+}
+
+.trip-card {
+    border-left: 3px solid #3a9dc2;
 }
 
 .ratio-chart {
@@ -357,6 +394,11 @@ progressbar.ratio-progress progress {
 
 .data-table {
     background: transparent;
+    padding-right: 6px;
+}
+
+.data-table > label {
+    min-height: 24px;
 }
 
 .table-head {

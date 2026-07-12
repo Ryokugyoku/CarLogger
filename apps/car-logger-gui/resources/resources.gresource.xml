@@ -11,6 +11,7 @@
     <file>icons/logs.svg</file>
     <file>icons/signals.svg</file>
     <file>icons/maintenance.svg</file>
+    <file compressed="true">icons/health-ai.png</file>
     <file>icons/settings.svg</file>
     <file>icons/apex-trace.svg</file>
     <file compressed="true">icons/dashboard-vehicle-hero.png</file>

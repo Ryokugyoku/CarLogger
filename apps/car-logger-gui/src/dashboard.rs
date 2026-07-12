@@ -1,10 +1,20 @@
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::time::Duration;
 
+use car_logger_application::{
+    DiagnosticDashboardData, DiagnosticRepository, HealthDashboardData, HealthService, ScoreDomain,
+    ScoreGranularity, ScoreStatus,
+};
 use car_logger_domain::{RealtimeSignalState, RealtimeState};
+use car_logger_storage::DuckdbCanFrameRepository;
+use chrono::{Local, TimeDelta, Utc};
+use crossbeam_channel::unbounded;
 use gtk::prelude::*;
 use gtk::{Box as GtkBox, Grid, Label, Orientation, ProgressBar, glib};
 
@@ -185,7 +195,14 @@ pub fn setup_dashboard_refresh(
     builder: &gtk::Builder,
     realtime_state: Arc<RealtimeState>,
     translation_manager: Rc<RefCell<TranslationManager>>,
+    log_database_path: PathBuf,
+    is_connected: Arc<AtomicBool>,
 ) {
+    setup_offline_summary(builder, log_database_path);
+    let mode_stack: gtk::Stack = builder
+        .object("dashboard_mode_stack")
+        .expect("Could not find dashboard_mode_stack");
+    mode_stack.set_visible_child_name("offline");
     {
         let mut tm = translation_manager.borrow_mut();
         for (label_id, msgid) in DASHBOARD_LABELS {
@@ -242,7 +259,16 @@ pub fn setup_dashboard_refresh(
             engine_card,
             #[strong]
             smoothed_rpm,
+            #[strong]
+            mode_stack,
+            #[strong]
+            is_connected,
             move || {
+                mode_stack.set_visible_child_name(if is_connected.load(Ordering::Relaxed) {
+                    "live"
+                } else {
+                    "offline"
+                });
                 let snapshot = realtime_state
                     .snapshot()
                     .into_iter()
@@ -279,6 +305,194 @@ pub fn setup_dashboard_refresh(
                 glib::ControlFlow::Continue
             }
         ),
+    );
+}
+
+struct OfflineData {
+    health: HealthDashboardData,
+    diagnostics: DiagnosticDashboardData,
+}
+
+fn setup_offline_summary(builder: &gtk::Builder, path: PathBuf) {
+    let score: Label = builder
+        .object("offline_health_score")
+        .expect("offline_health_score");
+    let state: Label = builder
+        .object("offline_health_state")
+        .expect("offline_health_state");
+    let meta: Label = builder
+        .object("offline_health_meta")
+        .expect("offline_health_meta");
+    let diagnostic_state: Label = builder
+        .object("offline_diagnostic_state")
+        .expect("offline_diagnostic_state");
+    let diagnostic_meta: Label = builder
+        .object("offline_diagnostic_meta")
+        .expect("offline_diagnostic_meta");
+    let learning: Label = builder
+        .object("offline_learning")
+        .expect("offline_learning");
+    let domains = [
+        (
+            ScoreDomain::Thermal,
+            builder.object::<Label>("offline_domain_thermal").unwrap(),
+        ),
+        (
+            ScoreDomain::Electrical,
+            builder
+                .object::<Label>("offline_domain_electrical")
+                .unwrap(),
+        ),
+        (
+            ScoreDomain::AirFuel,
+            builder.object::<Label>("offline_domain_air_fuel").unwrap(),
+        ),
+        (
+            ScoreDomain::RunningStability,
+            builder.object::<Label>("offline_domain_stability").unwrap(),
+        ),
+    ];
+    let (sender, receiver) = unbounded();
+    thread::spawn(move || {
+        let result = (|| {
+            let repository = DuckdbCanFrameRepository::open_read_only(path)?;
+            let diagnostics = repository.diagnostic_dashboard(20)?;
+            let now = Utc::now();
+            let health = HealthService::new(repository).dashboard(
+                ScoreGranularity::Day,
+                now - TimeDelta::days(30),
+                now,
+                31,
+            )?;
+            anyhow::Ok(OfflineData {
+                health,
+                diagnostics,
+            })
+        })()
+        .map_err(|error: anyhow::Error| error.to_string());
+        let _ = sender.send(result);
+    });
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        let Ok(result) = receiver.try_recv() else {
+            return glib::ControlFlow::Continue;
+        };
+        match result {
+            Ok(data) => render_offline_summary(
+                &score,
+                &state,
+                &meta,
+                &diagnostic_state,
+                &diagnostic_meta,
+                &learning,
+                &domains,
+                &data,
+            ),
+            Err(error) => {
+                state.set_text(&translate("Vehicle history unavailable"));
+                meta.set_text(&error);
+                diagnostic_state.set_text(&translate("Diagnostics unavailable"));
+                learning.set_text(&translate("No learning data available"));
+            }
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+fn render_offline_summary(
+    score: &Label,
+    state: &Label,
+    meta: &Label,
+    diagnostic_state: &Label,
+    diagnostic_meta: &Label,
+    learning: &Label,
+    domains: &[(ScoreDomain, Label)],
+    data: &OfflineData,
+) {
+    if let Some(latest) = &data.health.latest {
+        score.set_text(
+            &latest
+                .score
+                .map(|value| format!("{value:.0}"))
+                .unwrap_or_else(|| "—".into()),
+        );
+        let state_text = match (latest.status, latest.score) {
+            (ScoreStatus::Scored, Some(value)) if value < 40.0 => "Needs attention",
+            (ScoreStatus::Scored, Some(value)) if value < 70.0 => "Watch",
+            (ScoreStatus::Scored, Some(_)) => "Healthy",
+            (ScoreStatus::Scored, None) => "No data",
+            (ScoreStatus::Learning, _) => "Learning",
+            (ScoreStatus::InsufficientData, _) => "Insufficient data",
+            (ScoreStatus::NoData, _) => "No data",
+            (ScoreStatus::CalculationFailed, _) => "Calculation failed",
+        };
+        state.set_text(&translate(state_text));
+        let difference = data
+            .health
+            .previous
+            .as_ref()
+            .and_then(|previous| previous.score)
+            .zip(latest.score)
+            .map(|(previous, current)| {
+                format!(" · {} {:+.1}", translate("vs previous"), current - previous)
+            })
+            .unwrap_or_default();
+        meta.set_text(&format!(
+            "{} {:.0}%{} · {} {}",
+            translate("Confidence"),
+            latest.confidence,
+            difference,
+            translate("Last updated"),
+            latest
+                .calculated_at
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M")
+        ));
+        learning.set_text(&format!(
+            "{}: {} · {}: {:.1}h · {}: {:.0}%",
+            translate("Valid sessions"),
+            latest.session_count,
+            translate("Evaluated time"),
+            latest.evaluated_seconds / 3600.0,
+            translate("Data coverage"),
+            latest.coverage * 100.0
+        ));
+    } else {
+        state.set_text(&translate("No data"));
+        meta.set_text(&translate(
+            "Drive with logging enabled to build a health score.",
+        ));
+        learning.set_text(&translate("No learning data available"));
+    }
+    for (domain, label) in domains {
+        let value = data
+            .health
+            .components
+            .iter()
+            .find(|component| component.domain == *domain)
+            .and_then(|component| component.score);
+        label.set_text(
+            &value
+                .map(|value| format!("{value:.0}"))
+                .unwrap_or_else(|| "—".into()),
+        );
+    }
+    let diagnostics = &data.diagnostics;
+    diagnostic_state.set_text(&match diagnostics.mil_on {
+        Some(true) => format!("MIL ON · {} DTC", diagnostics.active.len()),
+        Some(false) => format!("MIL OFF · {} DTC", diagnostics.active.len()),
+        None => translate("Not observed yet"),
+    });
+    diagnostic_meta.set_text(
+        &diagnostics
+            .last_observed_at
+            .map(|at| {
+                format!(
+                    "{} {}",
+                    translate("Last acquisition"),
+                    at.with_timezone(&Local).format("%Y-%m-%d %H:%M")
+                )
+            })
+            .unwrap_or_else(|| translate("No diagnostic observation yet")),
     );
 }
 
