@@ -13,5 +13,6 @@
     <file>icons/maintenance.svg</file>
     <file>icons/settings.svg</file>
     <file>icons/apex-trace.svg</file>
+    <file compressed="true">icons/dashboard-vehicle-hero.png</file>
   </gresource>
 </gresources>

@@ -19,12 +19,12 @@ use crate::ui::TranslationManager;
 const FRAME_LIMIT: u32 = 8_000;
 const DEFAULT_SERIES_LIMIT: usize = 4;
 const SERIES_COLORS: &[(f64, f64, f64)] = &[
-    (0.00, 0.76, 0.56),
-    (1.00, 0.69, 0.13),
-    (0.36, 0.68, 1.00),
-    (1.00, 0.36, 0.36),
-    (0.72, 0.47, 1.00),
-    (0.47, 0.86, 0.42),
+    (0.16, 0.88, 1.00),
+    (0.33, 0.49, 1.00),
+    (0.54, 0.40, 1.00),
+    (0.23, 0.77, 0.87),
+    (0.73, 0.52, 1.00),
+    (0.38, 0.93, 0.76),
 ];
 
 pub struct LogChartsView {
@@ -93,15 +93,22 @@ impl LogChartsView {
 
         let page = GtkBox::new(Orientation::Vertical, 18);
         page.add_css_class("dashboard-root");
+        page.add_css_class("chart-page");
         root.set_child(Some(&page));
 
         let header = GtkBox::new(Orientation::Horizontal, 12);
         header.add_css_class("manager-header");
+        header.add_css_class("telemetry-page-header");
         page.append(&header);
 
         let title_box = GtkBox::new(Orientation::Vertical, 6);
         title_box.set_hexpand(true);
         header.append(&title_box);
+
+        let eyebrow = Label::new(Some("APEX//TRACE · TELEMETRY LAB"));
+        eyebrow.set_halign(Align::Start);
+        eyebrow.add_css_class("page-eyebrow");
+        title_box.append(&eyebrow);
 
         let title = Label::new(Some(&translate("Data Charts")));
         title.set_halign(Align::Start);
@@ -163,6 +170,7 @@ impl LogChartsView {
 
         let side_panel = GtkBox::new(Orientation::Vertical, 12);
         side_panel.add_css_class("panel");
+        side_panel.add_css_class("chart-side-panel");
         content.set_start_child(Some(&side_panel));
 
         let signal_title = Label::new(Some(&translate("Known Signals")));
@@ -189,6 +197,7 @@ impl LogChartsView {
 
         let chart_panel = GtkBox::new(Orientation::Vertical, 12);
         chart_panel.add_css_class("panel");
+        chart_panel.add_css_class("chart-main-panel");
         content.set_end_child(Some(&chart_panel));
 
         let chart_header = GtkBox::new(Orientation::Horizontal, 12);
@@ -590,10 +599,10 @@ fn draw_chart(
     let plot_width = (width - left - right).max(1.0);
     let plot_height = (height - top - bottom).max(1.0);
 
-    context.set_source_rgb(0.08, 0.09, 0.11);
+    context.set_source_rgb(0.035, 0.055, 0.085);
     let _ = context.paint();
 
-    context.set_source_rgb(0.18, 0.22, 0.26);
+    context.set_source_rgb(0.13, 0.29, 0.40);
     context.rectangle(left, top, plot_width, plot_height);
     let _ = context.stroke();
 

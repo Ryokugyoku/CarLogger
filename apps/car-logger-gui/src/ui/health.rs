@@ -225,9 +225,20 @@ fn build_widgets(tm: &Rc<RefCell<TranslationManager>>) -> Widgets {
     root.set_child(Some(&page));
 
     let header = GtkBox::new(Orientation::Horizontal, 12);
+    header.add_css_class("telemetry-page-header");
+    let title_box = GtkBox::new(Orientation::Vertical, 5);
+    title_box.set_hexpand(true);
+    title_box.append(&label(
+        "APEX//TRACE · CONDITION INTELLIGENCE",
+        "page-eyebrow",
+    ));
     let title = label("Vehicle health", "title-label");
-    title.set_hexpand(true);
-    header.append(&title);
+    title_box.append(&title);
+    title_box.append(&label(
+        "Vehicle condition, confidence and long-term score trend",
+        "page-subtitle",
+    ));
+    header.append(&title_box);
     let recalculate = Button::with_label(&translate("Recalculate all"));
     recalculate.add_css_class("secondary-button");
     header.append(&recalculate);
@@ -272,7 +283,38 @@ fn build_widgets(tm: &Rc<RefCell<TranslationManager>>) -> Widgets {
     let summary = GtkBox::new(Orientation::Horizontal, 18);
     summary.add_css_class("health-summary");
     let score = label("—", "health-score");
-    summary.append(&score);
+    let score_orb = gtk::Overlay::new();
+    score_orb.set_valign(Align::Center);
+    score_orb.set_halign(Align::Center);
+    score_orb.set_size_request(180, 180);
+    score_orb.add_css_class("health-score-orb");
+
+    let score_orb_space = GtkBox::new(Orientation::Vertical, 0);
+    score_orb_space.set_size_request(150, 150);
+    score_orb.set_child(Some(&score_orb_space));
+
+    let score_caption = label("CONDITION", "health-score-caption");
+    score_caption.set_halign(Align::Center);
+    score_caption.set_valign(Align::Start);
+    score_caption.set_margin_top(28);
+
+    score.set_halign(Align::Center);
+    score.set_valign(Align::Center);
+    score.set_justify(gtk::Justification::Center);
+
+    let score_scale = label("/ 100", "health-score-scale");
+    score_scale.set_halign(Align::Center);
+    score_scale.set_valign(Align::Center);
+
+    let score_row = GtkBox::new(Orientation::Horizontal, 4);
+    score_row.set_halign(Align::Center);
+    score_row.set_valign(Align::Center);
+    score_row.append(&score);
+    score_row.append(&score_scale);
+
+    score_orb.add_overlay(&score_caption);
+    score_orb.add_overlay(&score_row);
+    summary.append(&score_orb);
     let summary_text = GtkBox::new(Orientation::Vertical, 5);
     let state = label(&translate("No data"), "health-state");
     let comparison = label("—", "muted-label");
@@ -287,6 +329,7 @@ fn build_widgets(tm: &Rc<RefCell<TranslationManager>>) -> Widgets {
 
     let diagnostic_panel = GtkBox::new(Orientation::Vertical, 8);
     diagnostic_panel.add_css_class("panel");
+    diagnostic_panel.add_css_class("health-diagnostics-card");
     diagnostic_panel.append(&label(
         "Diagnostics (separate from health score)",
         "section-title",
@@ -298,6 +341,7 @@ fn build_widgets(tm: &Rc<RefCell<TranslationManager>>) -> Widgets {
 
     let chart_panel = GtkBox::new(Orientation::Vertical, 8);
     chart_panel.add_css_class("panel");
+    chart_panel.add_css_class("health-trend-panel");
     chart_panel.append(&label(&translate("Score trend"), "section-title"));
     let chart = DrawingArea::new();
     chart.set_content_height(260);
@@ -315,7 +359,7 @@ fn build_widgets(tm: &Rc<RefCell<TranslationManager>>) -> Widgets {
     domain_cards.set_row_spacing(12);
     page.append(&domain_cards);
 
-    let details = GtkBox::new(Orientation::Vertical, 12);
+    let details = GtkBox::new(Orientation::Horizontal, 12);
     let reason_panel = GtkBox::new(Orientation::Vertical, 8);
     reason_panel.set_hexpand(true);
     reason_panel.add_css_class("panel");
@@ -324,6 +368,7 @@ fn build_widgets(tm: &Rc<RefCell<TranslationManager>>) -> Widgets {
     reason_panel.append(&reasons);
     details.append(&reason_panel);
     let stats_panel = GtkBox::new(Orientation::Vertical, 8);
+    stats_panel.set_hexpand(true);
     stats_panel.add_css_class("panel");
     stats_panel.append(&label(&translate("Period data"), "section-title"));
     let statistics = label("—", "muted-label");

@@ -29,10 +29,18 @@
 }
 
 .side-bar {
-    background: #0d0f12;
-    padding: 10px 8px;
-    border-right: 1px solid #242931;
+    background: linear-gradient(180deg, #08111b, #0b1018 48%, #10101a);
+    padding: 14px 8px 10px 8px;
+    border-right: 1px solid #1f4055;
     transition: width 200ms ease-in-out;
+}
+
+.sidebar-brand {
+    padding: 7px;
+    border-radius: 12px;
+    background: radial-gradient(circle, rgba(40, 225, 255, 0.14), transparent 68%);
+    border: 1px solid rgba(55, 205, 232, 0.2);
+    box-shadow: 0 0 18px rgba(40, 225, 255, 0.12);
 }
 
 .sidebar-item {
@@ -41,7 +49,7 @@
     background: transparent;
     color: #e8ecef;
     border: none;
-    border-radius: 8px;
+    border-radius: 10px;
     box-shadow: none;
     text-shadow: none;
     -gtk-icon-shadow: none;
@@ -54,12 +62,15 @@
 }
 
 .sidebar-item:hover {
-    background: #20252c;
+    background: linear-gradient(90deg, rgba(40, 225, 255, 0.12), rgba(85, 124, 255, 0.08));
+    color: #dffaff;
 }
 
 .sidebar-item:checked {
-    background: #243238;
-    color: #5df2c1;
+    background: linear-gradient(105deg, rgba(40, 225, 255, 0.22), rgba(85, 124, 255, 0.20));
+    color: #74eaff;
+    border-left: 3px solid #28e1ff;
+    box-shadow: 0 0 18px rgba(40, 225, 255, 0.10);
     font-weight: 700;
 }
 
@@ -145,8 +156,27 @@
 .ai-condition-root button:focus { outline: 2px solid #51d9f5; outline-offset: 2px; }
 
 .dashboard-root {
-    padding: 22px;
+    padding: 22px 24px 30px 24px;
 }
+
+.dashboard-hero {
+    border-radius: 18px;
+    border: 1px solid #224968;
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.36);
+    background: #07111d;
+}
+
+.dashboard-hero picture { border-radius: 18px; }
+
+.hero-copy {
+    padding: 20px 24px;
+    border-left: 3px solid #28e1ff;
+    background: linear-gradient(90deg, rgba(5, 13, 23, 0.88), rgba(5, 13, 23, 0.34));
+}
+
+.hero-eyebrow { color: #56def5; font-size: 8pt; font-weight: 900; letter-spacing: 2.6px; }
+.hero-title { color: #f5fbff; font-size: 30pt; font-weight: 900; letter-spacing: -0.6px; }
+.hero-subtitle { color: #a8c6d7; font-size: 11pt; font-weight: 600; }
 
 .title-label {
     font-size: 24pt;
@@ -166,15 +196,15 @@
 }
 
 .status-pill {
-    background: #17251f;
-    border: 1px solid #1e7f61;
-    border-radius: 8px;
+    background: rgba(8, 22, 31, 0.88);
+    border: 1px solid #278ca7;
+    border-radius: 999px;
     padding: 8px 14px;
     min-width: 110px;
 }
 
 .status-pill-label {
-    color: #5df2c1;
+    color: #65e8ff;
     font-weight: 900;
     font-size: 10pt;
 }
@@ -215,15 +245,15 @@
 }
 
 .dashboard-card {
-    border-radius: 14px;
+    border-radius: 16px;
     padding: 18px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
 }
 
 .engine-card {
-    background: radial-gradient(circle farthest-corner at 24% 58%, rgba(0, 194, 142, 0.09), transparent 44%),
-                linear-gradient(135deg, #1c2427, #171c21);
-    border-top: 2px solid #00c28e;
+    background: radial-gradient(circle farthest-corner at 24% 58%, rgba(40, 225, 255, 0.11), transparent 44%),
+                linear-gradient(135deg, #17252d, #151a23);
+    border-top: 2px solid #28e1ff;
     transition: background 1400ms ease-in-out, border-color 1400ms ease-in-out;
 }
 
@@ -240,13 +270,13 @@
 }
 
 .temperature-card {
-    background: linear-gradient(135deg, #231e21, #191b20);
-    border-top: 2px solid #ff765f;
+    background: linear-gradient(135deg, #1b202d, #171a24);
+    border-top: 2px solid #557cff;
 }
 
 .ratio-card {
-    background: linear-gradient(145deg, #1c2029, #171a21);
-    border-top: 2px solid #7b8cff;
+    background: radial-gradient(circle farthest-corner at 80% 12%, rgba(85, 124, 255, 0.12), transparent 45%), linear-gradient(145deg, #18212d, #151922);
+    border-top: 2px solid #6b8dff;
 }
 
 .dashboard-section-title {
@@ -384,23 +414,66 @@ progressbar.ratio-progress progress {
     font-style: italic;
 }
 
-.health-root { padding: 22px; }
-.health-summary {
-    background: linear-gradient(135deg, #16252d, #171d25);
-    border: 1px solid #287b91;
-    border-radius: 12px;
-    padding: 20px;
+.telemetry-page-header {
+    padding: 20px 22px;
+    background: radial-gradient(circle farthest-corner at 82% 22%, rgba(85, 124, 255, 0.18), transparent 42%),
+                linear-gradient(115deg, #0c1925, #101827 68%, #15182a);
+    border: 1px solid #244b64;
+    border-radius: 16px;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
 }
-.health-score { color: #54e6ff; font-size: 54pt; font-weight: 900; min-width: 150px; }
+
+.page-eyebrow { color: #54e6ff; font-size: 8pt; font-weight: 900; letter-spacing: 2.2px; }
+.page-subtitle { color: #8fa9ba; font-size: 10pt; }
+
+.chart-page paned > separator { background: transparent; min-width: 12px; }
+.chart-side-panel {
+    background: linear-gradient(160deg, #121c27, #111720);
+    border: 1px solid #27465a;
+    border-top: 2px solid #28e1ff;
+    border-radius: 14px;
+}
+.chart-main-panel {
+    background: radial-gradient(circle farthest-corner at 88% 8%, rgba(85, 124, 255, 0.10), transparent 36%), #111821;
+    border: 1px solid #29445b;
+    border-top: 2px solid #557cff;
+    border-radius: 14px;
+}
+
+.health-root { padding: 22px 24px 30px 24px; }
+.health-summary {
+    background: radial-gradient(circle farthest-corner at 12% 48%, rgba(40, 225, 255, 0.15), transparent 30%),
+                radial-gradient(circle farthest-corner at 88% 20%, rgba(85, 124, 255, 0.14), transparent 42%),
+                linear-gradient(135deg, #101e29, #141a28);
+    border: 1px solid #2c617c;
+    border-radius: 18px;
+    padding: 24px;
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.30);
+}
+.health-score-orb {
+    min-width: 150px;
+    min-height: 150px;
+    padding: 14px;
+    border-radius: 999px;
+    background: radial-gradient(circle, rgba(40, 225, 255, 0.12), rgba(8, 23, 34, 0.92) 68%);
+    border: 2px solid #35cce9;
+    box-shadow: 0 0 28px rgba(40, 225, 255, 0.18);
+}
+.health-score { color: #73edff; font-size: 46pt; font-weight: 900; min-width: 120px; }
+.health-score-caption { color: #6b9db2; font-size: 7pt; font-weight: 900; letter-spacing: 1.8px; }
+.health-score-scale { color: #668494; font-size: 8pt; font-weight: 700; }
 .health-state { color: #dff9ff; font-size: 17pt; font-weight: 900; }
 .health-state-ok { color: #54e6ff; }
 .health-state-warning { color: #ffd166; }
 .health-state-critical { color: #ff6b6b; }
 .health-learning { color: #ffd166; font-weight: 800; }
-.health-chart { background: #10151b; border: 1px solid #293744; border-radius: 8px; }
+.health-chart { background: #08121d; border: 1px solid #28506a; border-radius: 12px; }
+.health-trend-panel { background: linear-gradient(145deg, #111c27, #111720); border-top: 2px solid #557cff; border-radius: 14px; }
+.health-diagnostics-card { background: linear-gradient(145deg, #111d27, #141923); border-left: 3px solid #28e1ff; border-radius: 12px; }
 .health-domain-card {
-    background: #1b222a; border: 1px solid #30414d; border-top: 3px solid #37cde8;
-    border-radius: 9px; padding: 14px; min-width: 175px;
+    background: radial-gradient(circle farthest-corner at 85% 12%, rgba(85, 124, 255, 0.12), transparent 45%), #151e29;
+    border: 1px solid #304e62; border-top: 3px solid #37cde8;
+    border-radius: 12px; padding: 16px; min-width: 175px;
 }
 .health-domain-score { color: #f5fbff; font-size: 25pt; font-weight: 900; }
 .health-reason { background: #141a20; border-radius: 6px; padding: 9px; color: #d8e5eb; }
@@ -408,9 +481,9 @@ progressbar.ratio-progress progress {
 .health-error { color: #ff7777; font-weight: 800; }
 
 .segmented-control {
-    background: #0f1216;
-    border: 1px solid #313a44;
-    border-radius: 8px;
+    background: rgba(7, 17, 27, 0.84);
+    border: 1px solid #2c4a5e;
+    border-radius: 10px;
     padding: 3px;
 }
 
@@ -426,8 +499,9 @@ progressbar.ratio-progress progress {
 }
 
 .segment-button:checked {
-    background: #00c28e;
-    color: #06110d;
+    background: linear-gradient(105deg, #28e1ff, #557cff);
+    color: #07111b;
+    box-shadow: 0 0 14px rgba(40, 225, 255, 0.18);
 }
 
 .signal-check {
@@ -440,13 +514,14 @@ progressbar.ratio-progress progress {
 }
 
 .signal-check:checked {
-    background: #17251f;
-    border-color: #1e7f61;
-    color: #5df2c1;
+    background: linear-gradient(100deg, rgba(40, 225, 255, 0.16), rgba(85, 124, 255, 0.12));
+    border-color: #3298b5;
+    color: #73eaff;
 }
 
 .chart-canvas {
-    background: #111418;
-    border: 1px solid #263039;
-    border-radius: 8px;
+    background: #09131f;
+    border: 1px solid #28506a;
+    border-radius: 12px;
+    box-shadow: inset 0 0 28px rgba(40, 225, 255, 0.035);
 }
