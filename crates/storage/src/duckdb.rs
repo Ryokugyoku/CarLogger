@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use car_logger_application::CanFrameRepository;
 use car_logger_domain::{CanFrame, CanIdObservation, SignalKind};
 use duckdb::{AccessMode, Config, Connection, params};
@@ -73,7 +73,6 @@ impl DuckdbCanFrameRepository {
     }
 
     pub(crate) fn initialize(&self) -> Result<()> {
-        self.initialize_log_tables()?;
         self.connection
             .execute_batch(
                 r#"
@@ -88,13 +87,6 @@ impl DuckdbCanFrameRepository {
                     data BLOB NOT NULL,
                     received_at TIMESTAMPTZ NOT NULL
                 );
-
-                ALTER TABLE can_frames
-                    ADD COLUMN IF NOT EXISTS signal_type TEXT DEFAULT 'PID';
-
-                UPDATE can_frames
-                SET signal_type = 'PID'
-                WHERE signal_type IS NULL OR signal_type = '';
 
                 CREATE INDEX IF NOT EXISTS idx_can_frames_can_id
                     ON can_frames(can_id);
@@ -231,7 +223,8 @@ impl DuckdbCanFrameRepository {
                     generation TEXT PRIMARY KEY, parent_generation TEXT, schema_version TEXT NOT NULL,
                     framework TEXT NOT NULL, framework_version TEXT, artifact_path TEXT NOT NULL,
                     artifact_sha256 TEXT NOT NULL, status TEXT NOT NULL, training_job_id TEXT,
-                    metrics_json TEXT NOT NULL, created_at TEXT NOT NULL, activated_at TEXT
+                    metrics_json TEXT NOT NULL, created_at TEXT NOT NULL, activated_at TEXT,
+                    scope TEXT DEFAULT 'global', decision_reason TEXT
                 );
                 CREATE TABLE IF NOT EXISTS ai_feature_schemas (
                     version TEXT PRIMARY KEY, window_seconds UINTEGER NOT NULL,
@@ -253,8 +246,6 @@ impl DuckdbCanFrameRepository {
                     training_decision_reason TEXT,
                     PRIMARY KEY(started_at, schema_version, purpose)
                 );
-                ALTER TABLE ai_model_generations ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'global';
-                ALTER TABLE ai_model_generations ADD COLUMN IF NOT EXISTS decision_reason TEXT;
                 CREATE TABLE IF NOT EXISTS ai_model_current (
                     scope TEXT PRIMARY KEY, generation TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
@@ -292,91 +283,6 @@ impl DuckdbCanFrameRepository {
             )
             .context("DuckDBログスキーマの初期化に失敗しました")?;
 
-        Ok(())
-    }
-
-    fn initialize_log_tables(&self) -> Result<()> {
-        self.connection.execute_batch(
-            r#"
-            CREATE SEQUENCE IF NOT EXISTS can_frames_sequence;
-            CREATE TABLE IF NOT EXISTS can_frames (
-                sequence_id BIGINT PRIMARY KEY DEFAULT nextval('can_frames_sequence'),
-                signal_type TEXT NOT NULL DEFAULT 'PID',
-                can_id UBIGINT NOT NULL,
-                is_extended BOOLEAN NOT NULL,
-                is_remote BOOLEAN NOT NULL,
-                data BLOB NOT NULL,
-                received_at TIMESTAMPTZ NOT NULL
-            );
-            ALTER TABLE can_frames ADD COLUMN IF NOT EXISTS signal_type TEXT DEFAULT 'PID';
-            UPDATE can_frames SET signal_type='PID' WHERE signal_type IS NULL OR signal_type='';
-
-            CREATE TABLE IF NOT EXISTS can_frame_seconds (
-                signal_type TEXT NOT NULL,
-                can_id UBIGINT NOT NULL,
-                is_extended BOOLEAN NOT NULL,
-                is_remote BOOLEAN NOT NULL,
-                bucket_epoch BIGINT NOT NULL,
-                first_data BLOB NOT NULL,
-                last_data BLOB NOT NULL,
-                min_data BLOB NOT NULL,
-                max_data BLOB NOT NULL,
-                frame_count UBIGINT NOT NULL,
-                change_count UBIGINT NOT NULL,
-                first_received_at TIMESTAMPTZ NOT NULL,
-                last_received_at TIMESTAMPTZ NOT NULL,
-                PRIMARY KEY(signal_type, can_id, is_extended, is_remote, bucket_epoch)
-            );
-            "#,
-        )?;
-        self.migrate_timestamp_column(
-            "can_frames",
-            "received_at",
-            &[
-                "idx_can_frames_can_id",
-                "idx_can_frames_signal_lookup",
-                "idx_can_frames_received_at",
-                "idx_can_frames_retention",
-            ],
-        )?;
-        self.migrate_timestamp_column(
-            "can_frame_seconds",
-            "first_received_at",
-            &["idx_can_frame_seconds_last_seen"],
-        )?;
-        self.migrate_timestamp_column(
-            "can_frame_seconds",
-            "last_received_at",
-            &["idx_can_frame_seconds_last_seen"],
-        )?;
-        Ok(())
-    }
-
-    fn migrate_timestamp_column(
-        &self,
-        table: &'static str,
-        column: &'static str,
-        dependent_indexes: &[&'static str],
-    ) -> Result<()> {
-        let data_type: String = self.connection.query_row(
-            "SELECT data_type FROM information_schema.columns WHERE table_name=?1 AND column_name=?2",
-            params![table, column],
-            |row| row.get(0),
-        )?;
-        if data_type == "TIMESTAMP WITH TIME ZONE" {
-            return Ok(());
-        }
-        ensure!(
-            matches!(data_type.as_str(), "VARCHAR" | "TEXT"),
-            "未対応の日時列型です: {table}.{column}={data_type}"
-        );
-        for index in dependent_indexes {
-            self.connection
-                .execute_batch(&format!("DROP INDEX IF EXISTS {index}"))?;
-        }
-        self.connection.execute_batch(&format!(
-            "ALTER TABLE {table} ALTER {column} TYPE TIMESTAMPTZ USING CAST({column} AS TIMESTAMPTZ)"
-        ))?;
         Ok(())
     }
 
@@ -591,63 +497,6 @@ mod tests {
         assert_eq!(observations[0].count, 2);
         assert_eq!(observations[1].id, 0x456);
         assert_eq!(observations[1].count, 1);
-    }
-
-    #[test]
-    fn migration_adds_signal_type_to_existing_log_schema() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("legacy.duckdb");
-        {
-            let connection = Connection::open(&db_path).unwrap();
-            connection
-                .execute_batch(
-                    r#"
-                    CREATE SEQUENCE can_frames_sequence;
-
-                    CREATE TABLE can_frames (
-                        sequence_id BIGINT PRIMARY KEY DEFAULT nextval('can_frames_sequence'),
-                        can_id UBIGINT NOT NULL,
-                        is_extended BOOLEAN NOT NULL,
-                        is_remote BOOLEAN NOT NULL,
-                        data BLOB NOT NULL,
-                        received_at TEXT NOT NULL
-                    );
-                    "#,
-                )
-                .unwrap();
-            connection
-                .execute(
-                    r#"
-                    INSERT INTO can_frames (
-                        can_id,
-                        is_extended,
-                        is_remote,
-                        data,
-                        received_at
-                    )
-                    VALUES (?1, ?2, ?3, ?4, ?5)
-                    "#,
-                    params![47_u32, false, false, vec![0x80_u8], "2026-01-01T00:00:00Z"],
-                )
-                .unwrap();
-        }
-
-        let repo = DuckdbCanFrameRepository::open(&db_path).unwrap();
-        let pid_observations = repo.list_observations(SignalKind::Pid).unwrap();
-        let can_observations = repo.list_observations(SignalKind::CanId).unwrap();
-
-        assert_eq!(pid_observations.len(), 1);
-        assert_eq!(pid_observations[0].id, 0x2F);
-        assert!(can_observations.is_empty());
-        let timestamp_type: String = repo
-            .connection()
-            .query_row(
-                "SELECT data_type FROM information_schema.columns WHERE table_name='can_frames' AND column_name='received_at'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(timestamp_type, "TIMESTAMP WITH TIME ZONE");
     }
 
     #[test]

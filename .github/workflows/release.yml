@@ -1,8 +1,8 @@
-name: release
+name: preview release
 
 on:
   push:
-    branches: [main]
+    branches: [staging]
     paths:
       - 'apps/**'
       - 'crates/**'
@@ -18,17 +18,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: apex-trace-release
+  group: apex-trace-preview-release
   cancel-in-progress: false
 
 jobs:
   version:
+    if: github.ref == 'refs/heads/staging'
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - id: version
         env: { GH_TOKEN: '${{ github.token }}' }
@@ -36,7 +37,7 @@ jobs:
           latest=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --jq '[.[] | select(.draft == false and .prerelease == false) | .tag_name | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0]' 2>/dev/null || true)
           if [[ -z "$latest" || "$latest" == null ]]; then latest="v$(sed -n 's/^version = "\([0-9.]*\)"/\1/p' Cargo.toml | head -1)"; fi
           IFS=. read -r major minor patch <<< "${latest#v}"
-          version="$major.$minor.$((patch + 1))"
+          version="$major.$minor.$((patch + 1))-preview.${GITHUB_RUN_NUMBER}"
           if git rev-parse "v$version" >/dev/null 2>&1; then echo "Version v$version already exists" >&2; exit 1; fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
@@ -45,14 +46,14 @@ jobs:
     needs: version
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { components: rustfmt,clippy }
       - run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libadwaita-1-dev libudev-dev libgettextpo-dev
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.11.9' }
       - run: python -m pip install -e './python/ai_worker[dev]'
       - run: ruff check python/ai_worker && ruff format --check python/ai_worker && pytest python/ai_worker
@@ -77,10 +78,10 @@ jobs:
             platform: linux-x64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: '${{ matrix.target }}' }
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.11.9' }
       - name: Linux build dependencies
         if: runner.os == 'Linux'
@@ -130,23 +131,23 @@ jobs:
           TARGET_TRIPLE: '${{ matrix.target }}'
           PLATFORM: '${{ matrix.platform }}'
         run: distribution/package-release.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: 'APEX-TRACE-${{ matrix.platform }}'
           path: release-assets/*
           if-no-files-found: error
 
-  approve-and-publish:
+  approve-and-publish-preview:
     needs: [version, build]
     runs-on: ubuntu-24.04
-    environment: production-release
+    environment: preview-release
     permissions:
       contents: write
       pull-requests: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { path: release-assets, merge-multiple: true }
       - name: Refuse duplicate publication
         env: { GH_TOKEN: '${{ github.token }}' }
@@ -154,9 +155,9 @@ jobs:
       - name: Generate Japanese release notes
         env: { GH_TOKEN: '${{ github.token }}' }
         run: distribution/generate-release-notes.sh "${{ needs.version.outputs.tag }}" > RELEASE_NOTES.md
-      - name: Create immutable release
+      - name: Create immutable preview release
         env: { GH_TOKEN: '${{ github.token }}' }
         run: |
           git tag "${{ needs.version.outputs.tag }}" "$GITHUB_SHA"
           git push origin "${{ needs.version.outputs.tag }}"
-          gh release create "${{ needs.version.outputs.tag }}" release-assets/* --title "APEX//TRACE ${{ needs.version.outputs.tag }}" --notes-file RELEASE_NOTES.md --verify-tag
+          gh release create "${{ needs.version.outputs.tag }}" release-assets/* --title "APEX//TRACE Preview ${{ needs.version.outputs.tag }}" --notes-file RELEASE_NOTES.md --verify-tag --prerelease

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use car_logger_application::CanFrameSource;
 use car_logger_domain::CanFrame;
-use socketcan::{CanFrame as SocketCanFrame, CanSocket, EmbeddedFrame, Frame, Socket};
+use socketcan::{CanFrame as SocketCanFrame, CanSocket, EmbeddedFrame, Socket};
 use std::fs;
 
 use crate::ConnectedInterface;

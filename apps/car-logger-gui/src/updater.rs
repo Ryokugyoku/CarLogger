@@ -152,22 +152,44 @@ fn discover() -> Result<Option<Candidate>, String> {
     if staged_slot().lock().is_ok_and(|value| value.is_some()) {
         return Ok(None);
     }
-    let updater = self_update::backends::github::Update::configure()
-        .repo_owner(OWNER)
-        .repo_name(REPOSITORY)
-        .bin_name(BINARY)
-        .current_version(current_version())
-        .no_confirm(true)
-        .show_output(false)
-        .build()
-        .map_err(|e| friendly_error(&e.to_string()))?;
-    let release = updater
-        .get_latest_release()
-        .map_err(|e| friendly_error(&e.to_string()))?;
     let current = Version::parse(current_version()).map_err(|e| e.to_string())?;
+    let release = if is_preview(&current) {
+        self_update::backends::github::ReleaseList::configure()
+            .repo_owner(OWNER)
+            .repo_name(REPOSITORY)
+            .build()
+            .map_err(|e| friendly_error(&e.to_string()))?
+            .fetch()
+            .map_err(|e| friendly_error(&e.to_string()))?
+            .into_iter()
+            .filter_map(|release| {
+                let version = Version::parse(release.version.trim_start_matches('v')).ok()?;
+                channel_accepts(&current, &version).then_some((version, release))
+            })
+            .max_by(|left, right| left.0.cmp(&right.0))
+            .map(|(_, release)| release)
+    } else {
+        let updater = self_update::backends::github::Update::configure()
+            .repo_owner(OWNER)
+            .repo_name(REPOSITORY)
+            .bin_name(BINARY)
+            .current_version(current_version())
+            .no_confirm(true)
+            .show_output(false)
+            .build()
+            .map_err(|e| friendly_error(&e.to_string()))?;
+        Some(
+            updater
+                .get_latest_release()
+                .map_err(|e| friendly_error(&e.to_string()))?,
+        )
+    };
+    let Some(release) = release else {
+        return Ok(None);
+    };
     let latest = Version::parse(release.version.trim_start_matches('v'))
         .map_err(|_| "リリースのバージョン情報が不正です".to_string())?;
-    if latest <= current || !latest.pre.is_empty() {
+    if !channel_accepts(&current, &latest) {
         return Ok(None);
     }
     let marker = platform_marker();
@@ -193,6 +215,19 @@ fn discover() -> Result<Option<Candidate>, String> {
         checksum_url: checksum.download_url.clone(),
         archive_name: archive.name.clone(),
     }))
+}
+
+fn is_preview(version: &Version) -> bool {
+    version.pre.as_str().split('.').next() == Some("preview")
+}
+
+fn channel_accepts(current: &Version, candidate: &Version) -> bool {
+    candidate > current
+        && if is_preview(current) {
+            is_preview(candidate)
+        } else {
+            candidate.pre.is_empty()
+        }
 }
 
 fn stage(
@@ -351,6 +386,31 @@ mod tests {
     #[test]
     fn semver_does_not_treat_old_as_update() {
         assert!(Version::parse("1.2.3").unwrap() > Version::parse("1.2.2").unwrap());
+    }
+    #[test]
+    fn preview_build_accepts_only_newer_preview_versions() {
+        let current = Version::parse("0.1.1-preview.42").unwrap();
+        assert!(channel_accepts(
+            &current,
+            &Version::parse("0.1.1-preview.43").unwrap()
+        ));
+        assert!(!channel_accepts(
+            &current,
+            &Version::parse("0.1.1").unwrap()
+        ));
+        assert!(!channel_accepts(
+            &current,
+            &Version::parse("0.1.1-beta.99").unwrap()
+        ));
+    }
+    #[test]
+    fn stable_build_accepts_only_newer_stable_versions() {
+        let current = Version::parse("0.1.1").unwrap();
+        assert!(channel_accepts(&current, &Version::parse("0.1.2").unwrap()));
+        assert!(!channel_accepts(
+            &current,
+            &Version::parse("0.1.2-preview.1").unwrap()
+        ));
     }
     #[test]
     fn rejects_tampered_archive() {
