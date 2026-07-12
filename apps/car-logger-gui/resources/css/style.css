@@ -69,6 +69,17 @@
     padding: 14px 18px;
 }
 
+.vehicle-profile-button {
+    background: #17232b;
+    border: 1px solid #2d5262;
+    border-radius: 8px;
+    padding: 6px 12px;
+    min-width: 180px;
+}
+
+.vehicle-profile-button:hover { background: #1d303a; border-color: #42cbe9; }
+.vehicle-name { color: #dff9ff; font-weight: 800; }
+
 .header-control {
     background: #1d2228;
     color: #f4f7f8;

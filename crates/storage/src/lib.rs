@@ -12,6 +12,7 @@ pub mod sqlite;
 
 pub use duckdb::DuckdbCanFrameRepository;
 pub use repository::StorageRepository;
+pub use repository::VehicleProfile;
 pub use sqlite::SqliteMasterRepository;
 
 #[deprecated(

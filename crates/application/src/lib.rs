@@ -14,6 +14,12 @@ pub use car_logger_health::{ScoreDomain, ScoreReason};
 pub trait CanFrameSource: Send {
     fn receive(&mut self) -> Result<CanFrame>;
 
+    /// Reads a stable vehicle identifier before logging begins. Sources that
+    /// cannot identify a vehicle return `None`; callers must not infer a match.
+    fn vehicle_vin(&mut self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Returns a completed low-priority diagnostic observation, when available.
     /// Sources which do not support request/response OBD-II simply return None.
     fn take_diagnostic_observation(&mut self) -> Option<DiagnosticObservation> {

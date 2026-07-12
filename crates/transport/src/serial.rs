@@ -208,6 +208,15 @@ impl CanFrameSource for SerialCanSource {
         }
     }
 
+    fn vehicle_vin(&mut self) -> Result<Option<String>> {
+        if self.parser.mode != ConnectionMode::Obd2 {
+            return Ok(None);
+        }
+        write_elm327_command(&mut self.port, "0902")?;
+        let response = read_elm327_response(&mut self.port, Duration::from_millis(4_000));
+        Ok(parse_mode_09_vin(&response))
+    }
+
     fn take_diagnostic_observation(&mut self) -> Option<DiagnosticObservation> {
         self.diagnostic.pending.pop_front()
     }
@@ -237,6 +246,37 @@ impl CanFrameSource for SerialCanSource {
             session_id: None,
         })
     }
+}
+
+fn parse_mode_09_vin(response: &str) -> Option<String> {
+    let mut collecting = false;
+    let mut bytes = Vec::new();
+    for line in elm327_response_lines(response) {
+        let mut line_bytes = line
+            .split_whitespace()
+            .filter_map(|token| {
+                let token = token.trim_matches(|c: char| !c.is_ascii_hexdigit());
+                (token.len() == 2)
+                    .then(|| u8::from_str_radix(token, 16).ok())
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        if let Some(start) = line_bytes.windows(3).position(|x| x == [0x49, 0x02, 0x01]) {
+            collecting = true;
+            line_bytes.drain(..start + 3);
+        } else if collecting
+            && line_bytes
+                .first()
+                .is_some_and(|x| (0x20..=0x2f).contains(x))
+        {
+            line_bytes.remove(0);
+        } else if !collecting {
+            continue;
+        }
+        bytes.extend(line_bytes.into_iter().filter(|x| x.is_ascii_alphanumeric()));
+    }
+    let vin = String::from_utf8(bytes.into_iter().take(17).collect()).ok()?;
+    (vin.len() == 17).then(|| vin.to_ascii_uppercase())
 }
 
 impl SerialCanSource {
@@ -1102,6 +1142,21 @@ mod tests {
         assert!(scheduler.ready());
         scheduler.unsupported = true;
         assert!(!scheduler.ready());
+    }
+
+    #[test]
+    fn parses_single_and_multiline_mode_09_vin() {
+        assert_eq!(
+            parse_mode_09_vin("49 02 01 4A 46 31 5A 44 38 41 31 31 52 31 32 33 34 35 36 37>"),
+            Some("JF1ZD8A11R1234567".into())
+        );
+        assert_eq!(
+            parse_mode_09_vin(
+                "0: 49 02 01 4A 46 31 5A 44\r1: 21 38 41 31 31 52 31 32\r2: 22 33 34 35 36 37>"
+            ),
+            Some("JF1ZD8A11R1234567".into())
+        );
+        assert_eq!(parse_mode_09_vin("NO DATA>"), None);
     }
 
     #[test]

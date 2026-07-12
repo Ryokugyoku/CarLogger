@@ -7,6 +7,15 @@ use rusqlite::{Connection, params};
 use crate::builtin_signals::insert_builtin_pid_definitions;
 use crate::paths::ensure_parent_directory;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VehicleProfile {
+    pub display_name: String,
+    pub manufacturer: String,
+    pub model: String,
+    pub model_year: Option<u16>,
+    pub vin: Option<String>,
+}
+
 pub struct SqliteMasterRepository {
     connection: Connection,
 }
@@ -49,6 +58,19 @@ impl SqliteMasterRepository {
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS vehicle_profile (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    display_name TEXT NOT NULL,
+                    manufacturer TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    model_year INTEGER,
+                    vin TEXT,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    CHECK (model_year IS NULL OR model_year BETWEEN 1886 AND 9999),
+                    CHECK (vin IS NULL OR length(vin) = 17)
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_vehicle_profile_vin
+                    ON vehicle_profile(vin) WHERE vin IS NOT NULL;
                 "#,
             )
             .context("SQLiteマスタースキーマの初期化に失敗しました")?;
@@ -264,6 +286,49 @@ impl SqliteMasterRepository {
         self.connection.execute(
             "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
             params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn vehicle_profile(&self) -> Result<Option<VehicleProfile>> {
+        let mut statement = self.connection.prepare(
+            "SELECT display_name,manufacturer,model,model_year,vin FROM vehicle_profile WHERE singleton=1",
+        )?;
+        let mut rows = statement.query([])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        Ok(Some(VehicleProfile {
+            display_name: row.get(0)?,
+            manufacturer: row.get(1)?,
+            model: row.get(2)?,
+            model_year: row.get(3)?,
+            vin: row.get(4)?,
+        }))
+    }
+
+    pub fn save_vehicle_profile(&self, profile: &VehicleProfile) -> Result<()> {
+        let vin = profile
+            .vin
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_ascii_uppercase);
+        anyhow::ensure!(
+            !profile.display_name.trim().is_empty(),
+            "車両表示名は必須です"
+        );
+        if let Some(value) = &vin {
+            anyhow::ensure!(
+                value.len() == 17
+                    && value.bytes().all(|b| b.is_ascii_alphanumeric())
+                    && !value.contains(['I', 'O', 'Q']),
+                "VINはI/O/Qを除く17桁の英数字で入力してください"
+            );
+        }
+        self.connection.execute(
+            "INSERT INTO vehicle_profile(singleton,display_name,manufacturer,model,model_year,vin,updated_at) VALUES(1,?1,?2,?3,?4,?5,CURRENT_TIMESTAMP) ON CONFLICT(singleton) DO UPDATE SET display_name=excluded.display_name,manufacturer=excluded.manufacturer,model=excluded.model,model_year=excluded.model_year,vin=excluded.vin,updated_at=CURRENT_TIMESTAMP",
+            params![profile.display_name.trim(),profile.manufacturer.trim(),profile.model.trim(),profile.model_year,vin],
         )?;
         Ok(())
     }
@@ -554,5 +619,26 @@ mod tests {
 
         assert_eq!(rpm.name, "Custom RPM");
         assert_eq!(rpm.formula, "custom_formula");
+    }
+
+    #[test]
+    fn vehicle_profile_round_trip_and_vin_validation() {
+        let repo = SqliteMasterRepository::open_in_memory().unwrap();
+        let profile = VehicleProfile {
+            display_name: "BRZ".into(),
+            manufacturer: "Subaru".into(),
+            model: "ZD8".into(),
+            model_year: Some(2024),
+            vin: Some("JF1ZD8A11R1234567".into()),
+        };
+        repo.save_vehicle_profile(&profile).unwrap();
+        assert_eq!(repo.vehicle_profile().unwrap(), Some(profile));
+        assert!(
+            repo.save_vehicle_profile(&VehicleProfile {
+                vin: Some("short".into()),
+                ..repo.vehicle_profile().unwrap().unwrap()
+            })
+            .is_err()
+        );
     }
 }

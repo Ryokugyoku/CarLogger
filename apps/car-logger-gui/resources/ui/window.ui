@@ -56,6 +56,32 @@
                   </object>
                 </child>
                 <child>
+                  <object class="GtkButton" id="btn_vehicle_profile">
+                    <property name="tooltip-text" translatable="yes">Edit vehicle information</property>
+                    <style><class name="vehicle-profile-button"/></style>
+                    <child>
+                      <object class="GtkBox">
+                        <property name="orientation">vertical</property>
+                        <property name="spacing">2</property>
+                        <child>
+                          <object class="GtkLabel" id="lbl_vehicle_name">
+                            <property name="label" translatable="yes">Vehicle not configured</property>
+                            <property name="halign">start</property>
+                            <style><class name="vehicle-name"/></style>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="GtkLabel" id="lbl_vehicle_detail">
+                            <property name="label" translatable="yes">Click to configure</property>
+                            <property name="halign">start</property>
+                            <style><class name="muted-label"/></style>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+                <child>
                   <object class="GtkComboBoxText" id="cmb_transport_interface">
                     <property name="width-request">250</property>
                     <property name="active">0</property>

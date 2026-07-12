@@ -7,6 +7,7 @@ use car_logger_domain::{CanFrame, CanIdObservation, SignalDefinition, SignalKind
 
 use crate::duckdb::DuckdbCanFrameRepository;
 use crate::sqlite::SqliteMasterRepository;
+pub use crate::sqlite::VehicleProfile;
 
 pub struct StorageRepository {
     master: SqliteMasterRepository,
@@ -75,6 +76,14 @@ impl StorageRepository {
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         self.master.set_setting(key, value)
+    }
+
+    pub fn vehicle_profile(&self) -> Result<Option<VehicleProfile>> {
+        self.master.vehicle_profile()
+    }
+
+    pub fn save_vehicle_profile(&self, profile: &VehicleProfile) -> Result<()> {
+        self.master.save_vehicle_profile(profile)
     }
 
     pub fn upsert_signal_definition(&self, definition: &SignalDefinition) -> Result<()> {
