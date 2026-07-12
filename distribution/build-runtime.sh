@@ -7,6 +7,12 @@ target="${TARGET_TRIPLE:?set TARGET_TRIPLE}"
 out="$root/dist/$target"
 python="${PYTHON_BIN:-python3.11}"
 
+# setup-python returns a native Windows path. Convert it before invoking the
+# executable from the MSYS2/Git Bash shell used by the Windows build job.
+if [[ "$target" == *windows* && "$python" =~ ^[A-Za-z]:\\ ]]; then
+  python="$(cygpath -u "$python")"
+fi
+
 rm -rf "$out"
 mkdir -p "$out/runtime" "$out/licenses"
 "$python" -c "import sys; assert sys.version.split()[0] == '$PYTHON_VERSION', sys.version"

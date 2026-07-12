@@ -81,7 +81,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: '${{ matrix.target }}' }
-      - uses: actions/setup-python@v6
+      - id: setup-python
+        uses: actions/setup-python@v6
         with: { python-version: '3.11.9' }
       - name: Linux build dependencies
         if: runner.os == 'Linux'
@@ -111,7 +112,7 @@ jobs:
         shell: bash
         env:
           TARGET_TRIPLE: '${{ matrix.target }}'
-          PYTHON_BIN: python
+          PYTHON_BIN: '${{ steps.setup-python.outputs.python-path }}'
         run: distribution/build-runtime.sh
       - name: Optional Windows Authenticode signing
         if: runner.os == 'Windows'
