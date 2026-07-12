@@ -12,6 +12,7 @@ chrono.workspace = true
 rusqlite.workspace = true
 duckdb.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 
 car-logger-domain = { path = "../domain" }
 car-logger-application = { path = "../application" }

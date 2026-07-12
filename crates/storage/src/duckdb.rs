@@ -138,6 +138,41 @@ impl DuckdbCanFrameRepository {
                     total_rows UBIGINT NOT NULL, processed_rows UBIGINT NOT NULL,
                     completed BOOLEAN NOT NULL, updated_at TEXT NOT NULL
                 );
+                ALTER TABLE ai_model_generations ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'global';
+                ALTER TABLE ai_model_generations ADD COLUMN IF NOT EXISTS decision_reason TEXT;
+                CREATE TABLE IF NOT EXISTS ai_model_current (
+                    scope TEXT PRIMARY KEY, generation TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE SEQUENCE IF NOT EXISTS ai_inference_results_sequence;
+                CREATE TABLE IF NOT EXISTS ai_inference_results (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('ai_inference_results_sequence'),
+                    request_id TEXT UNIQUE NOT NULL, session_id BIGINT, window_start TEXT NOT NULL,
+                    reconstruction_error DOUBLE NOT NULL, anomaly DOUBLE NOT NULL, ai_score DOUBLE,
+                    confidence DOUBLE NOT NULL, data_coverage DOUBLE NOT NULL, model_id TEXT NOT NULL,
+                    feature_schema TEXT NOT NULL, driving_state TEXT NOT NULL,
+                    contributions_json TEXT NOT NULL, completed_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS ai_condition_periods (
+                    granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+                    ai_score DOUBLE, confidence DOUBLE NOT NULL, data_coverage DOUBLE NOT NULL,
+                    status TEXT NOT NULL, window_count UBIGINT NOT NULL, calculated_at TEXT NOT NULL,
+                    PRIMARY KEY(granularity,period_start,period_end)
+                );
+                CREATE TABLE IF NOT EXISTS overall_condition_periods (
+                    granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+                    statistical_score DOUBLE, ai_score DOUBLE, overall_score DOUBLE,
+                    statistical_weight DOUBLE NOT NULL, ai_weight DOUBLE NOT NULL,
+                    ai_confidence DOUBLE NOT NULL, model_maturity DOUBLE NOT NULL,
+                    provisional BOOLEAN NOT NULL, disagreement BOOLEAN NOT NULL,
+                    explanation TEXT NOT NULL, calculated_at TEXT NOT NULL,
+                    PRIMARY KEY(granularity,period_start,period_end)
+                );
+                CREATE SEQUENCE IF NOT EXISTS ai_notifications_sequence;
+                CREATE TABLE IF NOT EXISTS ai_notifications (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('ai_notifications_sequence'),
+                    session_id BIGINT, kind TEXT NOT NULL, observed_at TEXT NOT NULL,
+                    message TEXT NOT NULL
+                );
                 "#,
             )
             .context("DuckDBログスキーマの初期化に失敗しました")?;

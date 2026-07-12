@@ -453,6 +453,7 @@ dependencies = [
  "chrono",
  "duckdb",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
