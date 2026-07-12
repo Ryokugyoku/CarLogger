@@ -13,6 +13,7 @@ use crate::realtime_logging::{
 use crate::signal_decoder::definition_map;
 use crate::ui::TranslationManager;
 use crate::ui::can_id_manager::CanIdManagerView;
+use crate::ui::health::HealthView;
 use crate::ui::log_charts::LogChartsView;
 use crate::ui::settings::SettingsView;
 use crate::ui::sidebar::Sidebar;
@@ -180,6 +181,9 @@ fn build_ui(
     let dashboard_container: GtkBox = builder
         .object("dashboard_container")
         .expect("Could not find dashboard_container");
+    let health_container: GtkBox = builder
+        .object("health_container")
+        .expect("Could not find health_container");
     let main_surface: GtkBox = builder
         .object("main_surface")
         .expect("Could not find main_surface");
@@ -230,6 +234,16 @@ fn build_ui(
 
     let log_charts_view = LogChartsView::setup(translation_manager.clone(), repository.clone());
     log_chart_container.append(log_charts_view.widget());
+
+    let health_view = HealthView::setup(
+        translation_manager.clone(),
+        config::log_database_path(&database_path),
+        repository
+            .as_ref()
+            .is_some_and(|repo| repo.is_log_read_only()),
+        &window,
+    );
+    health_container.append(health_view.widget());
 
     // 設定画面の読み込み
     let settings_builder =

@@ -29,6 +29,9 @@ impl Sidebar {
         let btn_maintenance: ToggleButton = builder
             .object("btn_maintenance")
             .expect("Could not find btn_maintenance");
+        let btn_health: ToggleButton = builder
+            .object("btn_health")
+            .expect("Could not find btn_health");
         let btn_can_ids: ToggleButton = builder
             .object("btn_can_ids")
             .expect("Could not find btn_can_ids");
@@ -46,6 +49,9 @@ impl Sidebar {
         let lbl_maintenance: Label = builder
             .object("lbl_maintenance")
             .expect("Could not find lbl_maintenance");
+        let lbl_health: Label = builder
+            .object("lbl_health")
+            .expect("Could not find lbl_health");
         let lbl_can_ids: Label = builder
             .object("lbl_can_ids")
             .expect("Could not find lbl_can_ids");
@@ -59,6 +65,7 @@ impl Sidebar {
             tm.add(lbl_logs.clone(), "Log Analysis");
             tm.add(lbl_charts.clone(), "Data Charts");
             tm.add(lbl_maintenance.clone(), "Maintenance");
+            tm.add(lbl_health.clone(), "Vehicle health");
             tm.add(lbl_can_ids.clone(), "IDs");
             tm.add(lbl_settings.clone(), "Settings");
         }
@@ -68,6 +75,7 @@ impl Sidebar {
             lbl_logs,
             lbl_charts,
             lbl_maintenance,
+            lbl_health,
             lbl_can_ids,
             lbl_settings,
         ];
@@ -107,6 +115,7 @@ impl Sidebar {
             (btn_logs.clone(), "logs"),
             (btn_charts.clone(), "charts"),
             (btn_maintenance.clone(), "maintenance"),
+            (btn_health.clone(), "health"),
             (btn_can_ids.clone(), "can_ids"),
             (btn_settings.clone(), "settings"),
         ];

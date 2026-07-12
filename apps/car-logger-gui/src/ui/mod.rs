@@ -61,6 +61,7 @@ impl TranslationManager {
 }
 
 pub mod can_id_manager;
+pub mod health;
 pub mod log_charts;
 pub mod settings;
 pub mod sidebar;

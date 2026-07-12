@@ -115,6 +115,30 @@
       </object>
     </child>
     <child>
+      <object class="GtkToggleButton" id="btn_health">
+        <style><class name="sidebar-item"/></style>
+        <property name="tooltip-text" translatable="yes">Vehicle health</property>
+        <property name="child">
+          <object class="GtkBox">
+            <property name="spacing">10</property>
+            <child>
+              <object class="GtkImage">
+                <property name="resource">/com/carlogger/CarLogger/icons/maintenance.svg</property>
+                <property name="pixel-size">24</property>
+              </object>
+            </child>
+            <child>
+              <object class="GtkLabel" id="lbl_health">
+                <property name="label" translatable="yes">Vehicle health</property>
+                <property name="visible">0</property>
+                <style><class name="sidebar-label"/></style>
+              </object>
+            </child>
+          </object>
+        </property>
+      </object>
+    </child>
+    <child>
       <object class="GtkToggleButton" id="btn_can_ids">
         <style>
           <class name="sidebar-item"/>

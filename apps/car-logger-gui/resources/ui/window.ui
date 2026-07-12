@@ -136,6 +136,19 @@
 
                 <child>
                   <object class="GtkStackPage">
+                    <property name="name">health</property>
+                    <property name="child">
+                      <object class="GtkBox" id="health_container">
+                        <property name="orientation">vertical</property>
+                        <property name="hexpand">true</property>
+                        <property name="vexpand">true</property>
+                      </object>
+                    </property>
+                  </object>
+                </child>
+
+                <child>
+                  <object class="GtkStackPage">
                     <property name="name">maintenance</property>
                     <property name="child">
                       <object class="GtkBox">

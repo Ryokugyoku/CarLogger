@@ -360,7 +360,21 @@ impl HealthScoreRepository for DuckdbCanFrameRepository {
     fn recalculate_all(&mut self, chunk_size: usize) -> Result<HealthProgress> {
         self.writable()?;
         self.connection().execute_batch("DELETE FROM health_score_reasons; DELETE FROM health_score_components; DELETE FROM health_score_periods; DELETE FROM health_session_features; DELETE FROM driving_sessions; DELETE FROM health_baselines; DELETE FROM health_backfill_state WHERE operation='backfill';")?;
-        self.backfill(chunk_size)
+        // A recalculation is one application operation even though backfill is
+        // deliberately chunked. Calling backfill only once left large logs in
+        // a partially rebuilt state and made callers accidentally restart it.
+        loop {
+            let mut progress = self.backfill(chunk_size)?;
+            if progress.completed {
+                progress.operation = "recalculate".into();
+                progress.updated_at = Utc::now();
+                self.connection().execute(
+                    "INSERT OR REPLACE INTO health_backfill_state VALUES('recalculate',?1,?2,?3,true,?4)",
+                    params![progress.last_sequence_id, progress.total_rows, progress.processed_rows, progress.updated_at.to_rfc3339()],
+                )?;
+                return Ok(progress);
+            }
+        }
     }
     fn health_progress(&self) -> Result<Option<HealthProgress>> {
         let mut st=self.connection().prepare("SELECT operation,last_sequence_id,total_rows,processed_rows,completed,updated_at FROM health_backfill_state ORDER BY updated_at DESC LIMIT 1")?;

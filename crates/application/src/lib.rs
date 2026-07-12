@@ -121,6 +121,17 @@ pub trait HealthScoreRepository {
 pub struct HealthService<R> {
     repository: R,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HealthDashboardData {
+    pub latest: Option<StoredHealthScore>,
+    pub previous: Option<StoredHealthScore>,
+    pub series: Vec<StoredHealthScore>,
+    pub components: Vec<StoredComponent>,
+    pub reasons: Vec<ScoreReason>,
+    pub progress: Option<HealthProgress>,
+}
+
 impl<R: HealthScoreRepository> HealthService<R> {
     pub fn new(repository: R) -> Self {
         Self { repository }
@@ -153,6 +164,46 @@ impl<R: HealthScoreRepository> HealthService<R> {
     }
     pub fn progress(&self) -> Result<Option<HealthProgress>> {
         self.repository.health_progress()
+    }
+    /// Loads one bounded dashboard window. Keeping this composition in the
+    /// application layer prevents GUI code from issuing storage queries.
+    pub fn dashboard(
+        &self,
+        granularity: ScoreGranularity,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        max_points: usize,
+    ) -> Result<HealthDashboardData> {
+        let mut series = self.repository.scores(granularity, start, end)?;
+        if series.len() > max_points {
+            series.drain(..series.len() - max_points);
+        }
+        let latest = series
+            .last()
+            .cloned()
+            .or(self.repository.latest_score(granularity)?);
+        let previous = latest.as_ref().and_then(|latest| {
+            series
+                .iter()
+                .rev()
+                .find(|item| item.id != latest.id)
+                .cloned()
+        });
+        let (components, reasons) = match &latest {
+            Some(score) => (
+                self.repository.components(score.id)?,
+                self.repository.reasons(score.id)?,
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
+        Ok(HealthDashboardData {
+            latest,
+            previous,
+            series,
+            components,
+            reasons,
+            progress: self.repository.health_progress()?,
+        })
     }
     pub fn into_inner(self) -> R {
         self.repository

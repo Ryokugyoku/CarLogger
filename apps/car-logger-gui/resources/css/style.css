@@ -341,6 +341,29 @@ progressbar.ratio-progress progress {
     font-style: italic;
 }
 
+.health-root { padding: 22px; }
+.health-summary {
+    background: linear-gradient(135deg, #16252d, #171d25);
+    border: 1px solid #287b91;
+    border-radius: 12px;
+    padding: 20px;
+}
+.health-score { color: #54e6ff; font-size: 54pt; font-weight: 900; min-width: 150px; }
+.health-state { color: #dff9ff; font-size: 17pt; font-weight: 900; }
+.health-state-ok { color: #54e6ff; }
+.health-state-warning { color: #ffd166; }
+.health-state-critical { color: #ff6b6b; }
+.health-learning { color: #ffd166; font-weight: 800; }
+.health-chart { background: #10151b; border: 1px solid #293744; border-radius: 8px; }
+.health-domain-card {
+    background: #1b222a; border: 1px solid #30414d; border-top: 3px solid #37cde8;
+    border-radius: 9px; padding: 14px; min-width: 175px;
+}
+.health-domain-score { color: #f5fbff; font-size: 25pt; font-weight: 900; }
+.health-reason { background: #141a20; border-radius: 6px; padding: 9px; color: #d8e5eb; }
+.health-progress { background: #171d23; border-left: 4px solid #ffd166; padding: 12px; }
+.health-error { color: #ff7777; font-weight: 800; }
+
 .segmented-control {
     background: #0f1216;
     border: 1px solid #313a44;
