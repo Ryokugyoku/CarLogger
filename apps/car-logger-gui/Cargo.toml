@@ -17,6 +17,8 @@ car-logger-domain = { path = "../../crates/domain" }
 car-logger-application = { path = "../../crates/application" }
 car-logger-transport = { path = "../../crates/transport" }
 car-logger-storage = { path = "../../crates/storage" }
+car-logger-ai-worker = { path = "../../crates/ai-worker" }
+serde_json.workspace = true
 
 [build-dependencies]
 glib-build-tools = "0.20"

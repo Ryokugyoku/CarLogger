@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from . import PROTOCOL_VERSION
+from .training import activate_model, train
+from .inference import InferenceEngine
 
 
 def _memory_bytes() -> int | None:
@@ -49,6 +51,7 @@ def self_diagnostic(data_dir: Path, *, tensorflow: Any | None = None) -> dict[st
 
 def serve(data_dir: Path, source: TextIO = sys.stdin, sink: TextIO = sys.stdout) -> None:
     cancelled: set[str] = set()
+    inference_engine: Any | None = None
     for line in source:
         try:
             request = json.loads(line)
@@ -61,7 +64,28 @@ def serve(data_dir: Path, source: TextIO = sys.stdin, sink: TextIO = sys.stdout)
                 payload = self_diagnostic(data_dir)
             elif kind == "cancel":
                 cancelled.add(str(request.get("payload", {}).get("target_request_id")))
+                cancel_file = (
+                    data_dir / f"cancel-{request.get('payload', {}).get('target_request_id')}"
+                )
+                cancel_file.touch()
                 payload = {"cancelled": True}
+            elif kind == "train":
+                import tensorflow as tf
+
+                training_payload = dict(request.get("payload", {}))
+                training_payload["cancel_file"] = str(data_dir / f"cancel-{request_id}")
+                payload = train(training_payload, data_dir, tf)
+            elif kind == "activate_model":
+                import tensorflow as tf
+
+                payload = activate_model(dict(request.get("payload", {})), data_dir, tf)
+                inference_engine = None
+            elif kind == "infer":
+                if inference_engine is None:
+                    import tensorflow as tf
+
+                    inference_engine = InferenceEngine(data_dir, tf)
+                payload = inference_engine.infer(dict(request.get("payload", {})))
             elif kind == "shutdown":
                 payload = {"shutdown": True}
             else:

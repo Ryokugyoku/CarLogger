@@ -19,6 +19,7 @@ use gtk::{
 
 use crate::localization::translate;
 use crate::ui::TranslationManager;
+use crate::ui::ai_condition::AiConditionPanel;
 
 const MAX_GRAPH_POINTS: usize = 180;
 const RECALCULATE_CHUNK_SIZE: usize = 20_000;
@@ -150,6 +151,13 @@ impl HealthView {
         parent: &gtk::ApplicationWindow,
     ) -> Self {
         let widgets = Rc::new(build_widgets(&translation_manager));
+        let ai_panel = AiConditionPanel::new(database_path.clone(), read_only, parent);
+        widgets
+            .root
+            .child()
+            .and_downcast::<GtkBox>()
+            .expect("health page")
+            .append(ai_panel.widget());
         let selection = Rc::new(RefCell::new(Selection::default()));
         let series = Rc::new(RefCell::new(Vec::<StoredHealthScore>::new()));
         let recalculating = Rc::new(Cell::new(false));

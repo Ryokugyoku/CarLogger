@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    env,
     io::{BufRead, BufReader, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, Stdio},
     sync::mpsc,
     thread,
@@ -9,6 +10,114 @@ use std::{
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
+pub const PYTHON_ENV: &str = "CAR_LOGGER_AI_PYTHON";
+pub const WORKER_SCRIPT_ENV: &str = "CAR_LOGGER_AI_WORKER_SCRIPT";
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct WorkerDiagnostic {
+    pub python_version: String,
+    pub tensorflow_version: String,
+    pub keras_version: String,
+    pub cpu: String,
+    pub memory_bytes: Option<u64>,
+    pub writable: bool,
+    pub protocol_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerLaunch {
+    pub python: PathBuf,
+    pub script: PathBuf,
+}
+
+impl WorkerLaunch {
+    /// Finds the isolated worker runtime. Explicit environment settings win;
+    /// source-tree and application-adjacent layouts are fallback candidates.
+    pub fn discover() -> Result<Self, WorkerError> {
+        let roots = runtime_roots();
+        let python = if let Some(value) = env::var_os(PYTHON_ENV).filter(|x| !x.is_empty()) {
+            require_file(PathBuf::from(value), PYTHON_ENV)?
+        } else {
+            let candidates = roots.iter().flat_map(|root| {
+                [
+                    root.join("python/ai_worker/.venv/bin/python"),
+                    root.join("python/ai_worker/.venv/Scripts/python.exe"),
+                ]
+            });
+            first_file(candidates).ok_or_else(|| WorkerError::RuntimeNotFound {
+                component: "TensorFlow Python virtual environment".into(),
+                hint: format!("set {PYTHON_ENV} to python/ai_worker/.venv/bin/python"),
+            })?
+        };
+        let script = if let Some(value) = env::var_os(WORKER_SCRIPT_ENV).filter(|x| !x.is_empty()) {
+            require_file(PathBuf::from(value), WORKER_SCRIPT_ENV)?
+        } else {
+            first_file(
+                roots
+                    .iter()
+                    .map(|root| root.join("python/ai_worker/run_worker.py")),
+            )
+            .ok_or_else(|| WorkerError::RuntimeNotFound {
+                component: "AI worker script".into(),
+                hint: format!("set {WORKER_SCRIPT_ENV} to run_worker.py"),
+            })?
+        };
+        Ok(Self { python, script })
+    }
+
+    pub fn spawn_verified(
+        &self,
+        data_dir: &Path,
+        timeout: Duration,
+    ) -> Result<(Worker, WorkerDiagnostic), WorkerError> {
+        let mut worker = Worker::spawn(&self.python, &self.script, data_dir)?;
+        let response = worker.request("health_check", serde_json::json!({}), timeout)?;
+        if !response.ok {
+            return Err(WorkerError::Unhealthy(
+                response
+                    .error
+                    .unwrap_or_else(|| "unknown worker error".into()),
+            ));
+        }
+        let diagnostic: WorkerDiagnostic = serde_json::from_value(response.payload)
+            .map_err(|error| WorkerError::Protocol(error.to_string()))?;
+        if diagnostic.protocol_version != PROTOCOL_VERSION || !diagnostic.writable {
+            return Err(WorkerError::Unhealthy(
+                "worker diagnostic is incompatible or data directory is not writable".into(),
+            ));
+        }
+        Ok((worker, diagnostic))
+    }
+}
+
+fn first_file(paths: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    paths.into_iter().find(|path| path.is_file())
+}
+
+fn require_file(path: PathBuf, setting: &str) -> Result<PathBuf, WorkerError> {
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(WorkerError::RuntimeNotFound {
+            component: setting.into(),
+            hint: format!("{} does not exist", path.display()),
+        })
+    }
+}
+
+fn runtime_roots() -> Vec<PathBuf> {
+    let mut roots = vec![
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf),
+    ];
+    if let Ok(executable) = env::current_exe() {
+        roots.extend(executable.ancestors().map(Path::to_path_buf));
+    }
+    roots.dedup();
+    roots
+}
 #[derive(Debug, Serialize)]
 struct Request<'a> {
     request_id: &'a str,
@@ -35,6 +144,10 @@ pub enum WorkerError {
     Timeout,
     #[error("worker exited")]
     Exited,
+    #[error("AI runtime not found: {component}; {hint}")]
+    RuntimeNotFound { component: String, hint: String },
+    #[error("AI worker health check failed: {0}")]
+    Unhealthy(String),
 }
 
 pub struct Worker {
@@ -42,7 +155,101 @@ pub struct Worker {
     stdin: ChildStdin,
     responses: mpsc::Receiver<Result<Response, WorkerError>>,
 }
+
+/// Prevents a crash loop from competing with logging for CPU and memory.
+/// Three failures inside the configured interval disable AI until a new session.
+#[derive(Debug)]
+pub struct CrashGuard {
+    failures: std::collections::VecDeque<std::time::Instant>,
+    interval: Duration,
+    disabled: bool,
+}
+impl CrashGuard {
+    pub fn new(interval: Duration) -> Self {
+        Self {
+            failures: Default::default(),
+            interval,
+            disabled: false,
+        }
+    }
+    pub fn record_failure(&mut self, now: std::time::Instant) -> bool {
+        while self
+            .failures
+            .front()
+            .is_some_and(|at| now.duration_since(*at) > self.interval)
+        {
+            self.failures.pop_front();
+        }
+        self.failures.push_back(now);
+        if self.failures.len() >= 3 {
+            self.disabled = true;
+        }
+        self.disabled
+    }
+    pub fn disabled(&self) -> bool {
+        self.disabled
+    }
+}
+
+#[derive(Debug)]
+pub struct InferenceRequest {
+    pub payload: serde_json::Value,
+    pub timeout: Duration,
+    pub reply: mpsc::Sender<Result<Response, WorkerError>>,
+}
+
+/// Owns the long-lived worker on a dedicated thread. A bounded queue provides
+/// backpressure, so CAN/OBD polling and the GUI never wait for TensorFlow.
+pub struct AsyncInferenceWorker {
+    sender: mpsc::SyncSender<InferenceRequest>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+impl AsyncInferenceWorker {
+    pub fn spawn(mut worker: Worker, queue_capacity: usize) -> Self {
+        let (sender, receiver) = mpsc::sync_channel::<InferenceRequest>(queue_capacity);
+        let handle = thread::spawn(move || {
+            for request in receiver {
+                let result = worker.request("infer", request.payload, request.timeout);
+                let _ = request.reply.send(result);
+            }
+        });
+        Self {
+            sender,
+            handle: Some(handle),
+        }
+    }
+    pub fn try_infer(
+        &self,
+        payload: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<mpsc::Receiver<Result<Response, WorkerError>>, WorkerError> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.sender
+            .try_send(InferenceRequest {
+                payload,
+                timeout,
+                reply: reply_tx,
+            })
+            .map_err(|e| WorkerError::Protocol(format!("inference queue unavailable: {e}")))?;
+        Ok(reply_rx)
+    }
+}
+impl Drop for AsyncInferenceWorker {
+    fn drop(&mut self) {
+        let (replacement, _) = mpsc::sync_channel(0);
+        let old = std::mem::replace(&mut self.sender, replacement);
+        drop(old);
+        let _ = self.handle.take();
+    }
+}
 impl Worker {
+    pub fn spawn_discovered(
+        data_dir: &Path,
+        timeout: Duration,
+    ) -> Result<(Self, WorkerDiagnostic), WorkerError> {
+        WorkerLaunch::discover()?.spawn_verified(data_dir, timeout)
+    }
+
     pub fn spawn(python: &Path, script: &Path, data_dir: &Path) -> Result<Self, WorkerError> {
         std::fs::create_dir_all(data_dir)?;
         set_private(data_dir)?;
@@ -125,6 +332,16 @@ impl Worker {
             timeout,
         )
     }
+
+    /// Immediately stops an in-flight training process. Candidate directories
+    /// are never current-model pointers, so forced interruption is adoption-safe.
+    pub fn terminate(&mut self) -> Result<(), WorkerError> {
+        if self.child.try_wait()?.is_none() {
+            self.child.kill()?;
+            let _ = self.child.wait()?;
+        }
+        Ok(())
+    }
 }
 impl Drop for Worker {
     fn drop(&mut self) {
@@ -186,5 +403,74 @@ mod tests {
             w.request("x", serde_json::json!({}), Duration::from_secs(2)),
             Err(WorkerError::Protocol(_))
         ));
+    }
+
+    #[test]
+    fn forced_termination_is_safe_and_idempotent() {
+        let (d, p) = fake("import time;time.sleep(5)");
+        let mut w = Worker::spawn(Path::new("python3"), &p, d.path()).unwrap();
+        w.terminate().unwrap();
+        w.terminate().unwrap();
+        assert!(matches!(
+            w.request("x", serde_json::json!({}), Duration::from_millis(20)),
+            Err(WorkerError::Exited)
+        ));
+    }
+
+    #[test]
+    fn verified_launch_returns_typed_diagnostic() {
+        let (d, p) = fake(
+            "import sys,json\nfor l in sys.stdin:\n r=json.loads(l); payload={'python_version':'3.13','tensorflow_version':'2.21.0','keras_version':'3','cpu':'test','memory_bytes':123,'writable':True,'protocol_version':1}; print(json.dumps({'request_id':r['request_id'],'protocol_version':1,'kind':r['kind'],'ok':True,'payload':payload,'error':None}),flush=True)\n if r['kind']=='shutdown': break\n",
+        );
+        let launch = WorkerLaunch {
+            python: PathBuf::from("python3"),
+            script: p,
+        };
+        let (worker, diagnostic) = launch
+            .spawn_verified(d.path(), Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(diagnostic.tensorflow_version, "2.21.0");
+        worker.shutdown(Duration::from_secs(2)).unwrap();
+    }
+
+    #[test]
+    fn source_tree_discovery_prefers_project_virtual_environment() {
+        match WorkerLaunch::discover() {
+            Ok(launch) => {
+                assert!(launch.python.ends_with("python/ai_worker/.venv/bin/python"));
+                assert!(launch.script.ends_with("python/ai_worker/run_worker.py"));
+            }
+            Err(WorkerError::RuntimeNotFound { .. }) => {}
+            Err(error) => panic!("unexpected discovery error: {error}"),
+        }
+    }
+    #[test]
+    fn three_rapid_crashes_disable_session_ai() {
+        let mut guard = CrashGuard::new(Duration::from_secs(60));
+        let now = std::time::Instant::now();
+        assert!(!guard.record_failure(now));
+        assert!(!guard.record_failure(now + Duration::from_secs(1)));
+        assert!(guard.record_failure(now + Duration::from_secs(2)));
+        assert!(guard.disabled());
+    }
+    #[test]
+    fn inference_submission_does_not_wait_for_tensorflow() {
+        let (d, p) = fake(
+            "import sys,json,time\nfor l in sys.stdin:\n r=json.loads(l);time.sleep(.2);print(json.dumps({'request_id':r['request_id'],'protocol_version':1,'kind':'infer','ok':True,'payload':{},'error':None}),flush=True)\n",
+        );
+        let worker = Worker::spawn(Path::new("python3"), &p, d.path()).unwrap();
+        let async_worker = AsyncInferenceWorker::spawn(worker, 1);
+        let started = std::time::Instant::now();
+        let response = async_worker
+            .try_infer(serde_json::json!({}), Duration::from_secs(1))
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert!(
+            response
+                .recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .unwrap()
+                .ok
+        );
     }
 }

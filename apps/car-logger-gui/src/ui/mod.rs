@@ -60,6 +60,7 @@ impl TranslationManager {
     }
 }
 
+mod ai_condition;
 pub mod can_id_manager;
 pub mod health;
 pub mod log_charts;

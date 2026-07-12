@@ -1,4 +1,6 @@
 pub mod ai;
+mod ai_ui;
+pub use ai_ui::{AiUiSnapshot, ModelUiRecord};
 mod builtin_signals;
 mod diagnostics;
 pub mod duckdb;

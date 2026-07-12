@@ -138,6 +138,119 @@ impl DuckdbCanFrameRepository {
                     total_rows UBIGINT NOT NULL, processed_rows UBIGINT NOT NULL,
                     completed BOOLEAN NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE SEQUENCE IF NOT EXISTS dtc_events_sequence;
+                CREATE TABLE IF NOT EXISTS dtc_events (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('dtc_events_sequence'), code TEXT NOT NULL,
+                    ecu TEXT, first_detected_at TEXT NOT NULL, last_detected_at TEXT NOT NULL,
+                    active BOOLEAN NOT NULL, cleared_at TEXT, occurrence UINTEGER NOT NULL,
+                    source_service TEXT NOT NULL, session_id BIGINT
+                );
+                CREATE SEQUENCE IF NOT EXISTS dtc_observations_sequence;
+                CREATE TABLE IF NOT EXISTS dtc_observations (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('dtc_observations_sequence'),
+                    observed_at TEXT NOT NULL, mil_on BOOLEAN, reported_count UINTEGER,
+                    quality TEXT NOT NULL, error TEXT, source_service TEXT NOT NULL,
+                    session_id BIGINT, event_ids_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS diagnostic_state (
+                    singleton UTINYINT PRIMARY KEY, supported BOOLEAN, mil_on BOOLEAN,
+                    last_observed_at TEXT, last_error TEXT
+                );
+                CREATE SEQUENCE IF NOT EXISTS learning_features_sequence;
+                CREATE TABLE IF NOT EXISTS learning_features (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('learning_features_sequence'),
+                    session_id BIGINT, period_score_id BIGINT, observed_at TEXT NOT NULL,
+                    driving_state TEXT NOT NULL, feature_key TEXT NOT NULL, feature_value DOUBLE NOT NULL,
+                    feature_schema_version TEXT NOT NULL, data_quality DOUBLE NOT NULL,
+                    statistical_anomaly BOOLEAN NOT NULL, baseline_accepted BOOLEAN NOT NULL,
+                    score_engine TEXT NOT NULL, engine_version TEXT NOT NULL,
+                    temporally_related_dtc BOOLEAN NOT NULL
+                );
+                CREATE SEQUENCE IF NOT EXISTS user_feedback_sequence;
+                CREATE TABLE IF NOT EXISTS user_feedback (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('user_feedback_sequence'), kind TEXT NOT NULL,
+                    note TEXT, created_at TEXT NOT NULL, session_id BIGINT, period_score_id BIGINT,
+                    score_reason_id BIGINT, dtc_event_id BIGINT
+                );
+                CREATE TABLE IF NOT EXISTS ai_runtime_settings (
+                    singleton UTINYINT PRIMARY KEY CHECK(singleton = 1),
+                    auto_training BOOLEAN NOT NULL DEFAULT true,
+                    training_paused BOOLEAN NOT NULL DEFAULT false,
+                    app_version TEXT NOT NULL DEFAULT '0.1.0',
+                    worker_protocol_version UINTEGER NOT NULL DEFAULT 1,
+                    model_structure_version TEXT NOT NULL DEFAULT 'conv1d-ae-v1',
+                    feature_schema_version TEXT NOT NULL DEFAULT 'ai-features-v1',
+                    updated_at TEXT NOT NULL
+                );
+                INSERT OR IGNORE INTO ai_runtime_settings
+                    VALUES(1, true, false, '0.1.0', 1, 'conv1d-ae-v1', 'ai-features-v1', current_timestamp::TEXT);
+                CREATE TABLE IF NOT EXISTS ai_jobs (
+                    request_id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL,
+                    protocol_version UINTEGER NOT NULL, created_at TEXT NOT NULL,
+                    started_at TEXT, finished_at TEXT, cancelled_at TEXT,
+                    model_generation TEXT, progress DOUBLE DEFAULT 0, stage TEXT, error TEXT
+                );
+                CREATE TABLE IF NOT EXISTS ai_model_generations (
+                    generation TEXT PRIMARY KEY, parent_generation TEXT, schema_version TEXT NOT NULL,
+                    framework TEXT NOT NULL, framework_version TEXT, artifact_path TEXT NOT NULL,
+                    artifact_sha256 TEXT NOT NULL, status TEXT NOT NULL, training_job_id TEXT,
+                    metrics_json TEXT NOT NULL, created_at TEXT NOT NULL, activated_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS ai_feature_schemas (
+                    version TEXT PRIMARY KEY, window_seconds UINTEGER NOT NULL,
+                    sample_interval_seconds UINTEGER NOT NULL, inference_interval_seconds UINTEGER NOT NULL,
+                    minimum_signals UINTEGER NOT NULL, maximum_signals UINTEGER NOT NULL,
+                    signals_json TEXT NOT NULL, created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS ai_schema_signals (
+                    schema_version TEXT NOT NULL, ordinal UINTEGER NOT NULL, signal_key TEXT NOT NULL,
+                    median DOUBLE NOT NULL, mad DOUBLE NOT NULL, scale DOUBLE NOT NULL,
+                    coverage DOUBLE NOT NULL, selected BOOLEAN NOT NULL, exclusion_reason TEXT,
+                    PRIMARY KEY(schema_version, signal_key)
+                );
+                CREATE TABLE IF NOT EXISTS ai_feature_windows (
+                    session_id BIGINT, period_start TEXT, started_at TEXT NOT NULL,
+                    schema_version TEXT NOT NULL, purpose TEXT NOT NULL, driving_state TEXT NOT NULL,
+                    values_json TEXT NOT NULL, missing_mask_json TEXT NOT NULL, data_quality DOUBLE NOT NULL,
+                    training_candidate BOOLEAN NOT NULL, training_accepted BOOLEAN,
+                    training_decision_reason TEXT,
+                    PRIMARY KEY(started_at, schema_version, purpose)
+                );
+                ALTER TABLE ai_model_generations ADD COLUMN IF NOT EXISTS scope TEXT DEFAULT 'global';
+                ALTER TABLE ai_model_generations ADD COLUMN IF NOT EXISTS decision_reason TEXT;
+                CREATE TABLE IF NOT EXISTS ai_model_current (
+                    scope TEXT PRIMARY KEY, generation TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE SEQUENCE IF NOT EXISTS ai_inference_results_sequence;
+                CREATE TABLE IF NOT EXISTS ai_inference_results (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('ai_inference_results_sequence'),
+                    request_id TEXT UNIQUE NOT NULL, session_id BIGINT, window_start TEXT NOT NULL,
+                    reconstruction_error DOUBLE NOT NULL, anomaly DOUBLE NOT NULL, ai_score DOUBLE,
+                    confidence DOUBLE NOT NULL, data_coverage DOUBLE NOT NULL, model_id TEXT NOT NULL,
+                    feature_schema TEXT NOT NULL, driving_state TEXT NOT NULL,
+                    contributions_json TEXT NOT NULL, completed_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS ai_condition_periods (
+                    granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+                    ai_score DOUBLE, confidence DOUBLE NOT NULL, data_coverage DOUBLE NOT NULL,
+                    status TEXT NOT NULL, window_count UBIGINT NOT NULL, calculated_at TEXT NOT NULL,
+                    PRIMARY KEY(granularity,period_start,period_end)
+                );
+                CREATE TABLE IF NOT EXISTS overall_condition_periods (
+                    granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+                    statistical_score DOUBLE, ai_score DOUBLE, overall_score DOUBLE,
+                    statistical_weight DOUBLE NOT NULL, ai_weight DOUBLE NOT NULL,
+                    ai_confidence DOUBLE NOT NULL, model_maturity DOUBLE NOT NULL,
+                    provisional BOOLEAN NOT NULL, disagreement BOOLEAN NOT NULL,
+                    explanation TEXT NOT NULL, calculated_at TEXT NOT NULL,
+                    PRIMARY KEY(granularity,period_start,period_end)
+                );
+                CREATE SEQUENCE IF NOT EXISTS ai_notifications_sequence;
+                CREATE TABLE IF NOT EXISTS ai_notifications (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('ai_notifications_sequence'),
+                    session_id BIGINT, kind TEXT NOT NULL, observed_at TEXT NOT NULL,
+                    message TEXT NOT NULL
+                );
                 "#,
             )
             .context("DuckDBログスキーマの初期化に失敗しました")?;

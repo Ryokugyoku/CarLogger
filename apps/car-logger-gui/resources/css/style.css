@@ -101,6 +101,28 @@
     padding: 0 14px;
 }
 
+.ai-condition-root {
+    margin-top: 8px;
+    padding: 18px 0 28px 0;
+    border-top: 1px solid #2a3540;
+}
+
+.ai-score-card {
+    min-width: 190px;
+    min-height: 92px;
+    padding: 14px;
+    border-radius: 10px;
+    background: #182028;
+    border: 1px solid #334452;
+}
+
+.score-statistical { border-left: 4px solid #9ca7b2; }
+.score-ai { border-left: 4px solid #42d4f4; }
+.score-overall { border-left: 4px solid #538cff; }
+.ai-score-value { font-size: 23pt; font-weight: 900; color: #eefaff; }
+.ai-notice { color: #e5bd55; padding: 8px; }
+.ai-condition-root button:focus { outline: 2px solid #51d9f5; outline-offset: 2px; }
+
 .dashboard-root {
     padding: 22px;
 }

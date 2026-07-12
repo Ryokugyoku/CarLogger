@@ -1,11 +1,11 @@
 [project]
 name = "car-logger-ai-worker"
 version = "0.1.0"
-requires-python = ">=3.10"
-dependencies = ["tensorflow>=2.15"]
+requires-python = ">=3.11,<3.12"
+dependencies = ["tensorflow==2.16.1", "keras==3.3.3", "numpy==1.26.4"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest==8.2.2", "ruff==0.6.9"]
 
 [tool.ruff]
 line-length = 100
