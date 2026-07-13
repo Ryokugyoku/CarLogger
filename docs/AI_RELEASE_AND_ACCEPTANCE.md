@@ -31,6 +31,22 @@ must exclude VIN and location fields; export is initiated only by the user. AI s
 created with owner-only permissions. Model activation verifies SHA-256, schema and load/test
 inference; arbitrary external models are never automatically loaded.
 
+## Condition-score meaning and acceptance
+
+The AI value is a per-vehicle difference-from-usual indicator, not a probability of
+vehicle health and not a fault diagnosis. A model generation freezes channel names,
+channel order, units/semantics and training-time normalization. Training, validation,
+calibration and final evaluation sessions are chronological and mutually disjoint.
+Calibration tail bounds are based on robust percentiles rather than the largest single
+historical outlier.
+
+Release evidence must report, per vehicle and driving-state mix: usable-time coverage,
+false alerts per normal driving hour, repeat-run score variation, known/synthetic-change
+detection rate, detection lead time relative to a DTC or confirmed maintenance finding,
+and user-confirmed useful/false alerts. A numeric score alone is not acceptance evidence.
+The UI must show insufficient data instead of extrapolating across missing channels and
+must provide a next action for a persistent change.
+
 ## Acceptance record (2026-07-12)
 
 Automated source tests cover scoring, training cancellation, candidate acceptance/rejection,

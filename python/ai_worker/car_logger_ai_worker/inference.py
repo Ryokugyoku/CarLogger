@@ -114,11 +114,19 @@ class InferenceEngine:
                     "signal_name": key,
                     "reconstruction_error": float(value),
                     "normal_distribution": calibration,
+                    "normal_median": float(calibration["median"]),
+                    "normal_p95": float(calibration["p95"]),
+                    "normal_p99": float(calibration["p99"]),
                     "percentile": percentile,
                     "coverage": float(signal_coverage),
+                    "driving_state": payload["driving_state"],
+                    "window_start": payload.get("window_start"),
+                    "consecutive_count": int(payload.get("consecutive_count", 1)),
                 }
             )
         contributions.sort(key=lambda x: (x["percentile"], x["reconstruction_error"]), reverse=True)
+        for rank, contribution in enumerate(contributions, start=1):
+            contribution["rank"] = rank
         return {
             "reconstruction_error": error,
             "anomaly": error_percentile(error, calibration) / 100.0,

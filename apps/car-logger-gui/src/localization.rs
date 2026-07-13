@@ -91,10 +91,14 @@ fn translate_for_language(language: Language, msgid: &str) -> &str {
             "Statistical health score" => "統計健康スコア",
             "AI condition" => "AIコンディション",
             "Overall condition" => "総合コンディション",
+            "Difference from usual" => "普段との差",
+            "Overall reference" => "総合参考値",
             "AI state" => "AI状態",
             "Training data readiness" => "学習データの充足状況",
             "AI confidence" => "AI信頼度",
             "Realtime AI score" => "リアルタイムAIスコア",
+            "Assessment quality" => "判定品質",
+            "Latest difference score" => "最新の通常差スコア",
             "Current model generation" => "現行モデル世代",
             "Next retraining condition" => "次回再学習条件",
             "Session and period trend" => "セッションおよび期間推移",
@@ -121,6 +125,9 @@ fn translate_for_language(language: Language, msgid: &str) -> &str {
             "Close" => "閉じる",
             "Time series, normal range, and reconstruction error. This is not a fault diagnosis." => {
                 "信号の時系列、通常範囲、再構成誤差です。故障原因を断定する表示ではありません。"
+            }
+            "This shows a difference from this vehicle's usual pattern, not a fault diagnosis. If a change persists, log again under comparable conditions and check DTCs." => {
+                "これは故障診断ではなく、この車両の普段のパターンとの差です。変化が続く場合は同等条件で再記録し、DTCを確認してください。"
             }
             "Recalculate all" => "すべて再計算",
             "Hour" => "時間",

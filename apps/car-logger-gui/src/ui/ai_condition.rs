@@ -1,5 +1,5 @@
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
     thread,
@@ -18,12 +18,16 @@ use gtk::{
 use crate::localization::translate;
 
 enum Event {
-    Loaded(Box<Result<AiUiSnapshot, String>>),
+    Loaded(i64, Box<Result<AiUiSnapshot, String>>),
     Action(Result<String, String>),
 }
 
+#[derive(Clone)]
 pub struct AiConditionPanel {
     root: GtkBox,
+    path: PathBuf,
+    vehicle_id: Rc<Cell<i64>>,
+    tx: Sender<Event>,
 }
 
 struct Widgets {
@@ -45,10 +49,17 @@ struct Widgets {
     generations: GtkBox,
     notices: Label,
     action_result: Label,
+    chart: DrawingArea,
+    trend: Rc<RefCell<Vec<(String, f64)>>>,
 }
 
 impl AiConditionPanel {
-    pub fn new(path: PathBuf, read_only: bool, parent: &gtk::ApplicationWindow) -> Self {
+    pub fn new(
+        path: PathBuf,
+        read_only: bool,
+        parent: &gtk::ApplicationWindow,
+        vehicle_id: Rc<Cell<i64>>,
+    ) -> Self {
         let widgets = Rc::new(build());
         let alive = Rc::new(Cell::new(true));
         widgets.root.connect_unrealize(glib::clone!(
@@ -58,14 +69,27 @@ impl AiConditionPanel {
         ));
         let (tx, rx) = unbounded();
         wire(&widgets, path.clone(), read_only, parent, tx.clone());
-        poll(rx, widgets.clone(), alive, path.clone(), tx.clone());
-        load(path, tx);
+        poll(
+            rx,
+            widgets.clone(),
+            alive,
+            path.clone(),
+            tx.clone(),
+            vehicle_id.clone(),
+        );
+        load(path.clone(), vehicle_id.get(), tx.clone());
         Self {
             root: widgets.root.clone(),
+            path,
+            vehicle_id,
+            tx,
         }
     }
     pub fn widget(&self) -> &GtkBox {
         &self.root
+    }
+    pub fn reload(&self) {
+        load(self.path.clone(), self.vehicle_id.get(), self.tx.clone());
     }
 }
 
@@ -85,36 +109,50 @@ fn build() -> Widgets {
         "—",
         "score-statistical",
     );
-    let ai = value_card(&scores, "AI condition", "—", "score-ai");
-    let overall = value_card(&scores, "Overall condition", "—", "score-overall");
+    let ai = value_card(&scores, "Difference from usual", "—", "score-ai");
+    let overall = value_card(&scores, "Overall reference", "—", "score-overall");
     root.append(&scores);
     let summary = GtkBox::new(Orientation::Vertical, 6);
     summary.add_css_class("panel");
     let status = line(&summary, "AI state");
     let readiness = line(&summary, "Training data readiness");
-    let confidence = line(&summary, "AI confidence");
-    let realtime = line(&summary, "Realtime AI score");
+    let confidence = line(&summary, "Assessment quality");
+    let realtime = line(&summary, "Latest difference score");
     let current = line(&summary, "Current model generation");
     let retrain = line(&summary, "Next retraining condition");
     root.append(&summary);
-    let trend = GtkBox::new(Orientation::Vertical, 8);
-    trend.add_css_class("panel");
-    trend.append(&section("Session and period trend"));
+    let trend_box = GtkBox::new(Orientation::Vertical, 8);
+    trend_box.add_css_class("panel");
+    trend_box.append(&section("Session and period trend"));
     let chart = DrawingArea::new();
     chart.set_content_height(150);
-    chart.set_draw_func(|_, cr, w, h| {
-        cr.set_source_rgb(0.08, 0.11, 0.14);
-        let _ = cr.paint();
-        cr.set_source_rgb(0.18, 0.75, 0.92);
-        cr.set_line_width(2.0);
-        cr.move_to(0.0, h as f64 * 0.65);
-        cr.line_to(w as f64 * 0.35, h as f64 * 0.50);
-        cr.line_to(w as f64 * 0.7, h as f64 * 0.58);
-        cr.line_to(w as f64, h as f64 * 0.32);
-        let _ = cr.stroke();
-    });
-    trend.append(&chart);
-    root.append(&trend);
+    let trend = Rc::new(RefCell::new(Vec::<(String, f64)>::new()));
+    chart.set_draw_func(glib::clone!(
+        #[strong]
+        trend,
+        move |_, cr, w, h| {
+            cr.set_source_rgb(0.08, 0.11, 0.14);
+            let _ = cr.paint();
+            let values = trend.borrow();
+            if values.len() < 2 {
+                return;
+            }
+            cr.set_source_rgb(0.18, 0.75, 0.92);
+            cr.set_line_width(2.0);
+            for (index, (_, value)) in values.iter().enumerate() {
+                let x = index as f64 * w as f64 / (values.len() - 1) as f64;
+                let y = h as f64 * (1.0 - value.clamp(0.0, 100.0) / 100.0);
+                if index == 0 {
+                    cr.move_to(x, y);
+                } else {
+                    cr.line_to(x, y);
+                }
+            }
+            let _ = cr.stroke();
+        }
+    ));
+    trend_box.append(&chart);
+    root.append(&trend_box);
     let signals = GtkBox::new(Orientation::Vertical, 8);
     signals.add_css_class("panel");
     signals.append(&section("Top 3 contributing signals"));
@@ -184,6 +222,8 @@ fn build() -> Widgets {
         generations,
         notices,
         action_result,
+        chart,
+        trend,
     }
 }
 
@@ -220,12 +260,12 @@ fn value_card(flow: &FlowBox, name: &str, value: &str, class: &str) -> Label {
     l
 }
 
-fn load(path: PathBuf, tx: Sender<Event>) {
+fn load(path: PathBuf, vehicle_id: i64, tx: Sender<Event>) {
     thread::spawn(move || {
         let result = DuckdbCanFrameRepository::open_read_only(path)
-            .and_then(|r| r.ai_ui_snapshot())
+            .and_then(|r| r.ai_ui_snapshot(vehicle_id))
             .map_err(|e| e.to_string());
-        let _ = tx.send(Event::Loaded(Box::new(result)));
+        let _ = tx.send(Event::Loaded(vehicle_id, Box::new(result)));
     });
 }
 
@@ -317,6 +357,7 @@ fn poll(
     alive: Rc<Cell<bool>>,
     path: PathBuf,
     tx: Sender<Event>,
+    vehicle_id: Rc<Cell<i64>>,
 ) {
     glib::timeout_add_local(Duration::from_millis(150), move || {
         if !alive.get() {
@@ -324,14 +365,15 @@ fn poll(
         }
         for e in rx.try_iter() {
             match e {
-                Event::Loaded(result) => match *result {
-                    Ok(s) => render(&w, &s, &path, &tx),
+                Event::Loaded(loaded_vehicle, result) => match *result {
+                    Ok(s) if loaded_vehicle == vehicle_id.get() => render(&w, &s, &path, &tx),
+                    Ok(_) => {}
                     Err(e) => w.action_result.set_text(&e),
                 },
                 Event::Action(Err(e)) => w.action_result.set_text(&e),
                 Event::Action(Ok(m)) => {
                     w.action_result.set_text(&translate(&m));
-                    load(path.clone(), tx.clone())
+                    load(path.clone(), vehicle_id.get(), tx.clone())
                 }
             }
         }
@@ -360,7 +402,7 @@ fn render(w: &Widgets, s: &AiUiSnapshot, path: &Path, tx: &Sender<Event>) {
         s.valid_sessions,
         s.learning_seconds / 3600.0
     ));
-    w.ai.set_text(&score(s.ai_score));
+    w.ai.set_text(&condition_value(s.ai_score, s.ai_confidence));
     w.overall.set_text(&score(s.overall_score));
     w.confidence.set_text(&format!(
         "{:0.0}% · coverage {:0.0}%",
@@ -368,6 +410,8 @@ fn render(w: &Widgets, s: &AiUiSnapshot, path: &Path, tx: &Sender<Event>) {
         s.ai_coverage * 100.0
     ));
     w.realtime.set_text(&score(s.ai_score));
+    *w.trend.borrow_mut() = s.trend.clone();
+    w.chart.queue_draw();
     w.current
         .set_text(s.current_generation.as_deref().unwrap_or("—"));
     w.retrain
@@ -424,8 +468,32 @@ fn render(w: &Widgets, s: &AiUiSnapshot, path: &Path, tx: &Sender<Event>) {
         }
         w.generations.append(&row);
     }
-    w.notices.set_text(&[s.disagreement.then_some("⚠ Statistical and AI evaluations disagree."),s.provisional.then_some("ⓘ Overall condition is provisional."),s.worker_failure.as_ref().map(|_|"⚠ Worker failure; AI is unavailable while normal logging and statistical scoring continue."),Some("AI runs locally. VIN and location are excluded. Contributions are observations, not a diagnosis of a fault.")].into_iter().flatten().collect::<Vec<_>>().join("\n"));
-    w.statistical.set_text("See health score above");
+    let mut notices = Vec::new();
+    if s.disagreement {
+        notices.push("⚠ Statistical and AI evaluations disagree.".to_string());
+    }
+    if s.provisional {
+        notices.push("ⓘ Overall condition is provisional.".to_string());
+    }
+    if s.worker_failure.is_some() {
+        notices.push("⚠ Worker failure; AI is unavailable while normal logging and statistical scoring continue.".to_string());
+    }
+    notices.push(translate("This shows a difference from this vehicle's usual pattern, not a fault diagnosis. If a change persists, log again under comparable conditions and check DTCs."));
+    w.notices.set_text(&notices.join("\n"));
+    w.statistical.set_text(&score(s.statistical_score));
+}
+
+fn condition_value(value: Option<f64>, confidence: f64) -> String {
+    let label = if value.is_none() || confidence < 0.60 {
+        "データ不足"
+    } else if value.is_some_and(|score| score < 40.0) {
+        "普段との差が大きい"
+    } else if value.is_some_and(|score| score < 70.0) {
+        "普段との差あり"
+    } else {
+        "普段どおり"
+    };
+    value.map_or_else(|| label.into(), |score| format!("{label} · {score:.0}"))
 }
 
 fn contribution(parent: &GtkBox, v: &serde_json::Value) {

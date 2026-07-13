@@ -138,7 +138,7 @@ export CAR_LOGGER_AI_PYTHON=/path/to/python
 export CAR_LOGGER_AI_WORKER_SCRIPT=/path/to/run_worker.py
 ```
 
-AI のスコアは診断結果ではありません。学習データの量・質・走行条件によって結果が変わるため、統計スコアや実車の状態と合わせて参考情報として扱ってください。詳しい受け入れ条件は [AI Release & Acceptance](docs/AI_RELEASE_AND_ACCEPTANCE.md) を参照してください。
+AI の表示は健康確率や故障診断ではなく、選択中の車両について「同等の走行状態で普段のパターンとどの程度異なるか」を示す参考情報です。車両ごとにモデル、信号順序、学習時の正規化値を分離し、データ品質が不足する場合は判定を表示しません。変化が続く場合は同等条件で再記録し、統計スコア、DTC、実車の状態と合わせて確認してください。詳しい受け入れ条件は [AI Release & Acceptance](docs/AI_RELEASE_AND_ACCEPTANCE.md) を参照してください。
 
 ## データ保存
 

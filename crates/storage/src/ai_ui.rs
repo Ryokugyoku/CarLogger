@@ -19,6 +19,7 @@ pub struct AiUiSnapshot {
     pub current_generation: Option<String>,
     pub generations: Vec<ModelUiRecord>,
     pub ai_score: Option<f64>,
+    pub statistical_score: Option<f64>,
     pub ai_confidence: f64,
     pub ai_coverage: f64,
     pub overall_score: Option<f64>,
@@ -27,6 +28,7 @@ pub struct AiUiSnapshot {
     pub overall_explanation: String,
     pub contributions: Vec<Value>,
     pub worker_failure: Option<String>,
+    pub trend: Vec<(String, f64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,7 +43,7 @@ pub struct ModelUiRecord {
 }
 
 impl DuckdbCanFrameRepository {
-    pub fn ai_ui_snapshot(&self) -> Result<AiUiSnapshot> {
+    pub fn ai_ui_snapshot(&self, vehicle_id: i64) -> Result<AiUiSnapshot> {
         let mut out = AiUiSnapshot {
             auto_training: true,
             job_status: "preparing".into(),
@@ -59,10 +61,11 @@ impl DuckdbCanFrameRepository {
             "SELECT status,coalesce(stage,''),coalesce(progress,0),error FROM ai_jobs ORDER BY created_at DESC LIMIT 1", [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         ) { out.job_status=status; out.job_stage=stage; out.job_progress=progress; out.job_error=error; }
-        out.current_generation = self.current_model_generation("global")?;
-        let mut models = self.connection().prepare("SELECT generation,status,schema_version,coalesce(framework_version,''),artifact_sha256,created_at,decision_reason FROM ai_model_generations ORDER BY created_at DESC")?;
+        let scope = format!("vehicle-{vehicle_id}");
+        out.current_generation = self.current_model_generation(&scope)?;
+        let mut models = self.connection().prepare("SELECT generation,status,schema_version,coalesce(framework_version,''),artifact_sha256,created_at,decision_reason FROM ai_model_generations WHERE scope=?1 ORDER BY created_at DESC")?;
         out.generations = models
-            .query_map([], |r| {
+            .query_map(params![scope], |r| {
                 Ok(ModelUiRecord {
                     generation: r.get(0)?,
                     status: r.get(1)?,
@@ -81,12 +84,24 @@ impl DuckdbCanFrameRepository {
         {
             out.last_trained_at = Some(current.created_at.clone());
         }
-        let (sessions, seconds): (u64, f64) = self.connection().query_row("SELECT count(DISTINCT session_id),coalesce(count(*)*60.0,0) FROM ai_feature_windows WHERE training_accepted=true", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap_or((0,0.0));
+        let (sessions, seconds): (u64, f64) = self.connection().query_row(
+            "SELECT count(*),coalesce(sum(duration_seconds),0) FROM (SELECT session_id,date_diff('second',min(started_at::TIMESTAMP),max(started_at::TIMESTAMP))+60 AS duration_seconds FROM ai_feature_windows WHERE vehicle_id=?1 AND training_accepted=true GROUP BY session_id)",
+            params![vehicle_id], |r| Ok((r.get(0)?,r.get(1)?)),
+        ).unwrap_or((0,0.0));
         out.valid_sessions = sessions;
         out.learning_seconds = seconds;
-        if let Ok((score, confidence, coverage)) = self.connection().query_row("SELECT ai_score,confidence,data_coverage FROM ai_condition_periods ORDER BY calculated_at DESC LIMIT 1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))) { out.ai_score=score; out.ai_confidence=confidence; out.ai_coverage=coverage; }
-        if let Ok((score, provisional, disagreement, explanation)) = self.connection().query_row("SELECT overall_score,provisional,disagreement,explanation FROM overall_condition_periods ORDER BY calculated_at DESC LIMIT 1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))) { out.overall_score=score; out.provisional=provisional; out.disagreement=disagreement; out.overall_explanation=explanation; }
-        if let Ok((json,)) = self.connection().query_row("SELECT contributions_json FROM ai_inference_results ORDER BY completed_at DESC LIMIT 1", [], |r| Ok((r.get::<_,String>(0)?,))) { out.contributions=serde_json::from_str(&json).unwrap_or_default(); }
+        out.statistical_score = self.connection().query_row(
+            "SELECT overall_score FROM health_score_periods WHERE vehicle_id=?1 AND overall_score IS NOT NULL ORDER BY period_end DESC LIMIT 1",
+            params![vehicle_id], |row| row.get(0),
+        ).ok();
+        if let Ok((score, confidence, coverage)) = self.connection().query_row("SELECT ai_score,confidence,data_coverage FROM ai_condition_periods WHERE vehicle_id=?1 ORDER BY calculated_at DESC LIMIT 1", params![vehicle_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))) { out.ai_score=score; out.ai_confidence=confidence; out.ai_coverage=coverage; }
+        if let Ok((statistical, score, provisional, disagreement, explanation)) = self.connection().query_row("SELECT statistical_score,overall_score,provisional,disagreement,explanation FROM overall_condition_periods WHERE vehicle_id=?1 ORDER BY calculated_at DESC LIMIT 1", params![vehicle_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))) { out.statistical_score=statistical; out.overall_score=score; out.provisional=provisional; out.disagreement=disagreement; out.overall_explanation=explanation; }
+        if let Ok((json,)) = self.connection().query_row("SELECT contributions_json FROM ai_inference_results WHERE vehicle_id=?1 ORDER BY completed_at DESC LIMIT 1", params![vehicle_id], |r| Ok((r.get::<_,String>(0)?,))) { out.contributions=serde_json::from_str(&json).unwrap_or_default(); }
+        let mut trend = self.connection().prepare("SELECT period_start,ai_score FROM ai_condition_periods WHERE vehicle_id=?1 AND ai_score IS NOT NULL ORDER BY period_start DESC LIMIT 60")?;
+        out.trend = trend
+            .query_map(params![vehicle_id], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        out.trend.reverse();
         out.worker_failure = out.job_error.clone();
         Ok(out)
     }
@@ -100,16 +115,15 @@ impl DuckdbCanFrameRepository {
     pub fn rollback_ai_model(&self, generation: &str) -> Result<()> {
         ensure!(!self.is_read_only(), "read-only database");
         let tx = self.connection().unchecked_transaction()?;
-        let valid:bool=tx.query_row("SELECT count(*)=1 FROM ai_model_generations WHERE generation=?1 AND status IN ('superseded','active')",params![generation],|r|r.get(0))?;
-        ensure!(valid, "rollback target is not a retained verified model");
-        tx.execute("UPDATE ai_model_generations SET status='superseded' WHERE generation=(SELECT generation FROM ai_model_current WHERE scope='global')",[])?;
+        let scope:String=tx.query_row("SELECT scope FROM ai_model_generations WHERE generation=?1 AND status IN ('superseded','active')",params![generation],|r|r.get(0)).map_err(|_| anyhow::anyhow!("rollback target is not a retained verified model"))?;
+        tx.execute("UPDATE ai_model_generations SET status='superseded' WHERE generation=(SELECT generation FROM ai_model_current WHERE scope=?1)",params![scope])?;
         tx.execute(
             "UPDATE ai_model_generations SET status='active',activated_at=?1 WHERE generation=?2",
             params![Utc::now().to_rfc3339(), generation],
         )?;
         tx.execute(
-            "INSERT OR REPLACE INTO ai_model_current VALUES('global',?1,?2)",
-            params![generation, Utc::now().to_rfc3339()],
+            "INSERT OR REPLACE INTO ai_model_current VALUES(?1,?2,?3)",
+            params![scope, generation, Utc::now().to_rfc3339()],
         )?;
         tx.commit()?;
         Ok(())
@@ -152,7 +166,7 @@ mod tests {
         let repo = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         repo.connection().execute("INSERT INTO can_frames(vehicle_id,connection_session_id,signal_type,can_id,is_extended,is_remote,data,received_at) VALUES(1,1,'PID',1,false,false,?1,'2026-01-01T00:00:00Z')", params![vec![1_u8]]).unwrap();
         repo.connection().execute("INSERT INTO health_score_periods(vehicle_id,granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at) VALUES(1,'day','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',90,100,'scored',1,60,1,1,'a','b','c','2026-01-02T00:00:00Z')", []).unwrap();
-        repo.connection().execute("INSERT INTO ai_notifications(kind,observed_at,message) VALUES('change','2026-01-01T00:00:00Z','x')", []).unwrap();
+        repo.connection().execute("INSERT INTO ai_notifications(vehicle_id,kind,observed_at,message) VALUES(1,'change','2026-01-01T00:00:00Z','x')", []).unwrap();
         repo.reset_ai_data().unwrap();
         let raw: u64 = repo
             .connection()
@@ -179,5 +193,18 @@ mod tests {
                 .unwrap()
         );
         assert!(repo.reset_ai_data().is_err());
+    }
+
+    #[test]
+    fn ai_snapshot_is_isolated_by_vehicle() {
+        let repo = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        for (vehicle, score) in [(1, 88.0), (2, 42.0)] {
+            repo.connection().execute(
+                "INSERT INTO ai_condition_periods VALUES(?1,'day',?2,?3,?4,0.9,0.8,'available',12,?3)",
+                params![vehicle, format!("2026-01-0{vehicle}T00:00:00Z"), format!("2026-01-0{}T00:00:00Z", vehicle + 1), score],
+            ).unwrap();
+        }
+        assert_eq!(repo.ai_ui_snapshot(1).unwrap().ai_score, Some(88.0));
+        assert_eq!(repo.ai_ui_snapshot(2).unwrap().ai_score, Some(42.0));
     }
 }

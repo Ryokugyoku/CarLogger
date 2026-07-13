@@ -2,7 +2,7 @@ use anyhow::{Result, ensure};
 use car_logger_health::ai_condition::{
     AiAvailability, AiNotification, AiWindowResult, OverallCondition, SessionAiEvaluation,
 };
-use car_logger_health::ai_features::{FeatureWindow, Normalization};
+use car_logger_health::ai_features::{AiFeatureContract, FeatureWindow, Normalization};
 use chrono::{DateTime, Duration, Utc};
 use duckdb::params;
 use serde::{Deserialize, Serialize};
@@ -29,6 +29,7 @@ pub struct TrainingSessionCandidate {
 pub struct SessionSplit {
     pub training: Vec<i64>,
     pub validation: Vec<i64>,
+    pub calibration: Vec<i64>,
     pub evaluation: Vec<i64>,
 }
 
@@ -47,6 +48,7 @@ pub struct ModelGenerationRecord<'a> {
     pub metrics: &'a serde_json::Value,
     pub accepted: bool,
     pub reasons: &'a [String],
+    pub scope: &'a str,
 }
 
 pub struct OverallConditionRecord<'a> {
@@ -132,12 +134,15 @@ pub fn evaluate_training_readiness(
     if accepted.len() >= MIN_TRAINING_SESSIONS {
         let evaluation_count = 3.max((accepted.len() * 15).div_ceil(100));
         let validation_count = 1.max((accepted.len() * 15).div_ceil(100));
-        if accepted.len() <= evaluation_count + validation_count {
+        let calibration_count = 1.max((accepted.len() * 15).div_ceil(100));
+        if accepted.len() <= evaluation_count + validation_count + calibration_count {
             waiting.push("insufficient_leak_free_split".into());
         }
         if waiting.is_empty() {
-            let train_end = accepted.len() - evaluation_count - validation_count;
-            let validation_end = accepted.len() - evaluation_count;
+            let train_end =
+                accepted.len() - evaluation_count - validation_count - calibration_count;
+            let validation_end = train_end + validation_count;
+            let calibration_end = validation_end + calibration_count;
             return (
                 TrainingReadiness::Ready(SessionSplit {
                     training: accepted[..train_end].iter().map(|x| x.session_id).collect(),
@@ -145,7 +150,11 @@ pub fn evaluate_training_readiness(
                         .iter()
                         .map(|x| x.session_id)
                         .collect(),
-                    evaluation: accepted[validation_end..]
+                    calibration: accepted[validation_end..calibration_end]
+                        .iter()
+                        .map(|x| x.session_id)
+                        .collect(),
+                    evaluation: accepted[calibration_end..]
                         .iter()
                         .map(|x| x.session_id)
                         .collect(),
@@ -168,6 +177,150 @@ pub fn retraining_due(
 use crate::DuckdbCanFrameRepository;
 
 impl DuckdbCanFrameRepository {
+    pub fn refresh_ai_training_readiness(&self, now: DateTime<Utc>) -> Result<TrainingReadiness> {
+        let vehicle_id = self.vehicle_scope()?;
+        let mut statement = self.connection().prepare(
+            "SELECT session_id,min(started_at),max(started_at),avg(data_quality),arg_max(driving_state,started_at) FROM ai_feature_windows WHERE vehicle_id=?1 AND training_candidate=true AND session_id IS NOT NULL GROUP BY session_id ORDER BY min(started_at)",
+        )?;
+        let rows = statement.query_map(params![vehicle_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut candidates = Vec::new();
+        for row in rows {
+            let (session_id, start, last_window, coverage, driving_state) = row?;
+            let started_at = DateTime::parse_from_rfc3339(&start)?.with_timezone(&Utc);
+            let ended_at = DateTime::parse_from_rfc3339(&last_window)?.with_timezone(&Utc)
+                + Duration::seconds(60);
+            let health_score = self.connection().query_row(
+                "SELECT overall_score FROM health_score_periods WHERE vehicle_id=?1 AND overall_score IS NOT NULL AND period_start<?2 AND period_end>?3 ORDER BY calculated_at DESC LIMIT 1",
+                params![vehicle_id, ended_at.to_rfc3339(), started_at.to_rfc3339()], |row| row.get(0),
+            ).unwrap_or(0.0);
+            let has_dtc_or_mil = self
+                .connection()
+                .query_row(
+                    "SELECT count(*) > 0 FROM dtc_events WHERE vehicle_id=?1 AND session_id=?2",
+                    params![vehicle_id, session_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(false);
+            let has_fault_feedback = self.connection().query_row(
+                "SELECT count(*) > 0 FROM user_feedback WHERE session_id=?1 AND kind IN ('fault','false_normal')",
+                params![session_id], |row| row.get(0),
+            ).unwrap_or(false);
+            let ai_score = self.connection().query_row(
+                "SELECT avg(ai_score) FROM ai_inference_results WHERE vehicle_id=?1 AND session_id=?2 AND ai_score IS NOT NULL",
+                params![vehicle_id, session_id], |row| row.get(0),
+            ).ok();
+            candidates.push(TrainingSessionCandidate {
+                session_id,
+                started_at,
+                ended_at,
+                health_score,
+                coverage,
+                has_dtc_or_mil,
+                has_fault_feedback,
+                ai_score,
+                sessions_since_maintenance: None,
+                driving_state: driving_state.trim_matches('"').into(),
+            });
+        }
+        let (readiness, decisions) = evaluate_training_readiness(&candidates, now);
+        self.persist_training_decisions(&decisions)?;
+        Ok(readiness)
+    }
+
+    pub fn automatic_training_due(&self, now: DateTime<Utc>) -> Result<bool> {
+        let vehicle_id = self.vehicle_scope()?;
+        let (automatic, paused): (bool, bool) = self.connection().query_row(
+            "SELECT auto_training,training_paused FROM ai_runtime_settings WHERE singleton=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if !automatic || paused {
+            return Ok(false);
+        }
+        let scope = format!("vehicle-{vehicle_id}");
+        let last: Option<String> = self.connection().query_row(
+            "SELECT created_at FROM ai_model_generations WHERE scope=?1 AND status='active' ORDER BY created_at DESC LIMIT 1",
+            params![scope], |row| row.get(0),
+        ).ok();
+        let last_at = last
+            .as_deref()
+            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+            .map(|value| value.with_timezone(&Utc));
+        let new_sessions: usize = self.connection().query_row(
+            "SELECT count(DISTINCT session_id) FROM ai_feature_windows WHERE vehicle_id=?1 AND training_accepted=true AND (?2 IS NULL OR started_at>?2)",
+            params![vehicle_id, last], |row| row.get::<_, u64>(0),
+        )? as usize;
+        Ok(retraining_due(new_sessions, last_at, now))
+    }
+
+    pub fn ai_model_maturity(&self) -> Result<f64> {
+        let vehicle_id = self.vehicle_scope()?;
+        let sessions: f64 = self.connection().query_row(
+            "SELECT count(DISTINCT session_id)::DOUBLE FROM ai_feature_windows WHERE vehicle_id=?1 AND training_accepted=true",
+            params![vehicle_id], |row| row.get(0),
+        )?;
+        Ok((sessions / 30.0).clamp(0.0, 1.0))
+    }
+
+    pub fn ai_feature_contract(&self, schema: &str) -> Result<Option<AiFeatureContract>> {
+        let exists: bool = self.connection().query_row(
+            "SELECT count(*) > 0 FROM ai_feature_schemas WHERE version=?1",
+            params![schema],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            return Ok(None);
+        }
+        let mut statement = self.connection().prepare(
+            "SELECT signal_key,median,mad,scale FROM ai_schema_signals WHERE schema_version=?1 AND selected=true ORDER BY ordinal",
+        )?;
+        let values = statement
+            .query_map(params![schema], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    Normalization {
+                        median: row.get(1)?,
+                        mad: row.get(2)?,
+                        scale: row.get(3)?,
+                    },
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if values.len() < 4 {
+            return Ok(None);
+        }
+        Ok(Some(AiFeatureContract {
+            schema_version: schema.into(),
+            signal_keys: values.iter().map(|(key, _)| key.clone()).collect(),
+            normalization: values.into_iter().collect(),
+        }))
+    }
+
+    pub fn active_ai_contract(&self) -> Result<Option<(String, AiFeatureContract)>> {
+        let vehicle_id = self.vehicle_scope()?;
+        let scope = format!("vehicle-{vehicle_id}");
+        let Some(model_id) = self.current_model_generation(&scope)? else {
+            return Ok(None);
+        };
+        let schema: String = self.connection().query_row(
+            "SELECT schema_version FROM ai_model_generations WHERE generation=?1 AND scope=?2 AND status='active'",
+            params![model_id, scope],
+            |row| row.get(0),
+        )?;
+        let contract = self
+            .ai_feature_contract(&schema)?
+            .ok_or_else(|| anyhow::anyhow!("active AI schema has fewer than four signals"))?;
+        Ok(Some((model_id, contract)))
+    }
+
     /// Persists only complete results. The request id is an idempotency key;
     /// retries therefore cannot create duplicate windows.
     pub fn save_ai_inference_result(
@@ -175,6 +328,7 @@ impl DuckdbCanFrameRepository {
         result: &AiWindowResult,
         session_id: Option<i64>,
     ) -> Result<bool> {
+        let vehicle_id = self.vehicle_scope()?;
         ensure!(
             !self.is_read_only(),
             "AI推論結果を読み取り専用DBへ保存できません"
@@ -190,8 +344,8 @@ impl DuckdbCanFrameRepository {
             "不完全なAI推論結果は保存できません"
         );
         let changed=self.connection().execute(
-            "INSERT OR IGNORE INTO ai_inference_results(request_id,session_id,window_start,reconstruction_error,anomaly,ai_score,confidence,data_coverage,model_id,feature_schema,driving_state,contributions_json,completed_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-            params![result.request_id,session_id,result.window_start.to_rfc3339(),result.reconstruction_error,result.anomaly,result.score,result.confidence,result.coverage,result.model_id,result.feature_schema,result.driving_state,serde_json::to_string(&result.contributions)?,Utc::now().to_rfc3339()])?;
+            "INSERT OR IGNORE INTO ai_inference_results(request_id,vehicle_id,session_id,window_start,reconstruction_error,anomaly,ai_score,confidence,data_coverage,model_id,feature_schema,driving_state,contributions_json,completed_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            params![result.request_id,vehicle_id,session_id,result.window_start.to_rfc3339(),result.reconstruction_error,result.anomaly,result.score,result.confidence,result.coverage,result.model_id,result.feature_schema,result.driving_state,serde_json::to_string(&result.contributions)?,Utc::now().to_rfc3339()])?;
         Ok(changed == 1)
     }
 
@@ -202,6 +356,7 @@ impl DuckdbCanFrameRepository {
         end: DateTime<Utc>,
         value: &SessionAiEvaluation,
     ) -> Result<()> {
+        let vehicle_id = self.vehicle_scope()?;
         ensure!(
             matches!(
                 granularity,
@@ -210,8 +365,9 @@ impl DuckdbCanFrameRepository {
             "invalid AI aggregation granularity"
         );
         self.connection().execute(
-            "INSERT OR REPLACE INTO ai_condition_periods VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT OR REPLACE INTO ai_condition_periods VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
+                vehicle_id,
                 granularity,
                 start.to_rfc3339(),
                 end.to_rfc3339(),
@@ -227,8 +383,9 @@ impl DuckdbCanFrameRepository {
     }
 
     pub fn save_overall_condition(&self, record: &OverallConditionRecord<'_>) -> Result<()> {
+        let vehicle_id = self.vehicle_scope()?;
         let value = record.condition;
-        self.connection().execute("INSERT OR REPLACE INTO overall_condition_periods VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![record.granularity,record.start.to_rfc3339(),record.end.to_rfc3339(),record.statistical_score,record.ai_score,value.score,value.statistical_weight,value.ai_weight,record.ai_confidence,record.model_maturity,value.provisional,value.disagreement,value.explanation,Utc::now().to_rfc3339()])?;
+        self.connection().execute("INSERT OR REPLACE INTO overall_condition_periods VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",params![vehicle_id,record.granularity,record.start.to_rfc3339(),record.end.to_rfc3339(),record.statistical_score,record.ai_score,value.score,value.statistical_weight,value.ai_weight,record.ai_confidence,record.model_maturity,value.provisional,value.disagreement,value.explanation,Utc::now().to_rfc3339()])?;
         Ok(())
     }
 
@@ -237,9 +394,11 @@ impl DuckdbCanFrameRepository {
         session_id: Option<i64>,
         notification: &AiNotification,
     ) -> Result<()> {
+        let vehicle_id = self.vehicle_scope()?;
         self.connection().execute(
-            "INSERT INTO ai_notifications(session_id,kind,observed_at,message) VALUES(?1,?2,?3,?4)",
+            "INSERT INTO ai_notifications(vehicle_id,session_id,kind,observed_at,message) VALUES(?1,?2,?3,?4,?5)",
             params![
+                vehicle_id,
                 session_id,
                 format!("{:?}", notification.kind).to_lowercase(),
                 notification.at.to_rfc3339(),
@@ -255,18 +414,20 @@ impl DuckdbCanFrameRepository {
         split: &SessionSplit,
         schema: &str,
     ) -> Result<serde_json::Value> {
+        let vehicle_id = self.vehicle_scope()?;
         let ordered_sessions: Vec<_> = split
             .training
             .iter()
             .chain(&split.validation)
+            .chain(&split.calibration)
             .chain(&split.evaluation)
             .copied()
             .collect();
         let selected: BTreeSet<_> = ordered_sessions.iter().copied().collect();
         let mut statement = self.connection().prepare(
-            "SELECT session_id,values_json,missing_mask_json,started_at FROM ai_feature_windows WHERE schema_version=?1 AND training_accepted=true ORDER BY started_at",
+            "SELECT session_id,values_json,missing_mask_json,started_at FROM ai_feature_windows WHERE vehicle_id=?1 AND schema_version=?2 AND training_accepted=true ORDER BY started_at",
         )?;
-        let rows = statement.query_map(params![schema], |row| {
+        let rows = statement.query_map(params![vehicle_id, schema], |row| {
             Ok((
                 row.get::<_, Option<i64>>(0)?,
                 row.get::<_, String>(1)?,
@@ -327,7 +488,8 @@ impl DuckdbCanFrameRepository {
             );
         }
         Ok(serde_json::json!({
-            "scope":"global", "feature_schema":schema, "normalization":normalization,
+            "scope":format!("vehicle-{vehicle_id}"), "vehicle_id":vehicle_id,
+            "feature_schema":schema, "normalization":normalization,
             "values":windows.iter().map(|x| &x.1).collect::<Vec<_>>(),
             "masks":windows.iter().map(|x| &x.2).collect::<Vec<_>>(),
             "session_ids":windows.iter().map(|x| x.0).collect::<Vec<_>>(),
@@ -337,6 +499,7 @@ impl DuckdbCanFrameRepository {
     }
 
     pub fn persist_training_decisions(&self, decisions: &BTreeMap<i64, Vec<String>>) -> Result<()> {
+        let vehicle_id = self.vehicle_scope()?;
         ensure!(
             !self.is_read_only(),
             "学習判定を読み取り専用DBへ保存できません"
@@ -344,8 +507,8 @@ impl DuckdbCanFrameRepository {
         for (session_id, reasons) in decisions {
             let accepted = reasons.is_empty();
             self.connection().execute(
-                "UPDATE ai_feature_windows SET training_accepted=?1, training_decision_reason=?2 WHERE session_id=?3 AND training_candidate=true",
-                params![accepted, if accepted { None } else { Some(reasons.join(",")) }, session_id],
+                "UPDATE ai_feature_windows SET training_accepted=?1, training_decision_reason=?2 WHERE vehicle_id=?3 AND session_id=?4 AND training_candidate=true",
+                params![accepted, if accepted { None } else { Some(reasons.join(",")) }, vehicle_id, session_id],
             )?;
         }
         Ok(())
@@ -398,10 +561,10 @@ impl DuckdbCanFrameRepository {
             "モデル世代を読み取り専用DBへ保存できません"
         );
         self.connection().execute(
-            "INSERT INTO ai_model_generations(generation,parent_generation,schema_version,framework,framework_version,artifact_path,artifact_sha256,status,training_job_id,metrics_json,created_at,activated_at,scope,decision_reason) VALUES(?1,?2,?3,'tensorflow',?4,?5,?6,?7,NULL,?8,?9,NULL,'global',?10)",
+            "INSERT INTO ai_model_generations(generation,parent_generation,schema_version,framework,framework_version,artifact_path,artifact_sha256,status,training_job_id,metrics_json,created_at,activated_at,scope,decision_reason) VALUES(?1,?2,?3,'tensorflow',?4,?5,?6,?7,NULL,?8,?9,NULL,?10,?11)",
             params![model.generation, model.parent, model.schema, model.metrics.get("tensorflow_version").and_then(|x| x.as_str()), model.artifact_path, model.artifact_sha256,
                 if model.accepted { "candidate" } else { "rejected" }, serde_json::to_string(model.metrics)?, Utc::now().to_rfc3339(),
-                if model.reasons.is_empty() { None } else { Some(model.reasons.join(",")) }],
+                model.scope, if model.reasons.is_empty() { None } else { Some(model.reasons.join(",")) }],
         )?;
         Ok(())
     }
@@ -474,11 +637,12 @@ impl DuckdbCanFrameRepository {
         purpose: &str,
         candidate: bool,
     ) -> Result<()> {
+        let vehicle_id = self.vehicle_scope()?;
         ensure!(
             !self.is_read_only(),
             "AI特徴量を読み取り専用DBへ保存できません"
         );
-        self.connection().execute("INSERT OR REPLACE INTO ai_feature_windows(session_id,period_start,started_at,schema_version,purpose,driving_state,values_json,missing_mask_json,data_quality,training_candidate,training_accepted,training_decision_reason) VALUES(?1,NULL,?2,?3,?4,?5,?6,?7,?8,?9,NULL,NULL)",params![session_id,window.started_at.to_rfc3339(),window.schema_version,purpose,serde_json::to_string(&window.state)?,serde_json::to_string(&window.values)?,serde_json::to_string(&window.observed_mask)?,window.quality,candidate])?;
+        self.connection().execute("INSERT OR REPLACE INTO ai_feature_windows(vehicle_id,session_id,period_start,started_at,schema_version,purpose,driving_state,values_json,missing_mask_json,data_quality,training_candidate,training_accepted,training_decision_reason) VALUES(?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10,NULL,NULL)",params![vehicle_id,session_id,window.started_at.to_rfc3339(),window.schema_version,purpose,serde_json::to_string(&window.state)?,serde_json::to_string(&window.values)?,serde_json::to_string(&window.observed_mask)?,window.quality,candidate])?;
         Ok(())
     }
 }
@@ -513,7 +677,8 @@ mod tests {
     #[test]
     fn inference_result_is_complete_and_idempotent() {
         let dir = tempfile::tempdir().unwrap();
-        let repo = DuckdbCanFrameRepository::open(dir.path().join("ai.duckdb")).unwrap();
+        let mut repo = DuckdbCanFrameRepository::open(dir.path().join("ai.duckdb")).unwrap();
+        repo.select_vehicle(1);
         let mut result = AiWindowResult {
             request_id: "same-request".into(),
             window_start: Utc::now(),
@@ -549,10 +714,13 @@ mod tests {
             .training
             .iter()
             .chain(&split.validation)
+            .chain(&split.calibration)
             .chain(&split.evaluation)
             .collect();
         assert_eq!(all.len(), 10);
         assert!(split.training.last() < split.validation.first());
+        assert!(split.validation.last() < split.calibration.first());
+        assert!(split.calibration.last() < split.evaluation.first());
         assert!(split.validation.last() < split.evaluation.first());
     }
 
@@ -595,14 +763,15 @@ mod tests {
                 metrics: &serde_json::json!({}),
                 accepted: true,
                 reasons: &[],
+                scope: "vehicle-1",
             })
             .unwrap();
         repository
-            .activate_model_generation("global", "g1")
+            .activate_model_generation("vehicle-1", "g1")
             .unwrap();
         assert_eq!(
             repository
-                .current_model_generation("global")
+                .current_model_generation("vehicle-1")
                 .unwrap()
                 .as_deref(),
             Some("g1")
@@ -623,5 +792,100 @@ mod tests {
             .connection()
             .query_row("SELECT count(*) FROM ai_jobs", [], |x| x.get(0))
             .unwrap();
+    }
+
+    #[test]
+    fn active_contract_is_vehicle_scoped_and_preserves_channel_order() {
+        let mut repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
+        let signals = ["rpm", "vehicle_speed", "engine_load", "coolant_temperature"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, key)| {
+                (
+                    key.to_string(),
+                    Normalization {
+                        median: index as f64,
+                        mad: 1.0,
+                        scale: 2.0,
+                    },
+                    1.0,
+                )
+            })
+            .collect::<Vec<_>>();
+        repository
+            .save_ai_schema("vehicle-1-schema", &signals)
+            .unwrap();
+        repository
+            .register_model_generation(&ModelGenerationRecord {
+                generation: "vehicle-1-model",
+                parent: None,
+                schema: "vehicle-1-schema",
+                artifact_path: "/model",
+                artifact_sha256: "hash",
+                metrics: &serde_json::json!({}),
+                accepted: true,
+                reasons: &[],
+                scope: "vehicle-1",
+            })
+            .unwrap();
+        repository
+            .activate_model_generation("vehicle-1", "vehicle-1-model")
+            .unwrap();
+        let (_, contract) = repository.active_ai_contract().unwrap().unwrap();
+        assert_eq!(
+            contract.signal_keys,
+            signals
+                .iter()
+                .map(|value| value.0.clone())
+                .collect::<Vec<_>>()
+        );
+        repository.select_vehicle(2);
+        assert!(repository.active_ai_contract().unwrap().is_none());
+    }
+
+    #[test]
+    fn model_maturity_is_vehicle_scoped_and_capped() {
+        let mut repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
+        for session in 0..40 {
+            repository.connection().execute(
+                "INSERT INTO ai_feature_windows(vehicle_id,session_id,period_start,started_at,schema_version,purpose,driving_state,values_json,missing_mask_json,data_quality,training_candidate,training_accepted) VALUES(1,?1,NULL,?2,'s','training','global','[]','[]',1,true,true)",
+                params![session, format!("2026-01-01T00:00:{session:02}Z")],
+            ).unwrap();
+        }
+        assert_eq!(repository.ai_model_maturity().unwrap(), 1.0);
+        repository.select_vehicle(2);
+        assert_eq!(repository.ai_model_maturity().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn persisted_windows_are_rechecked_after_the_hold_period() {
+        let repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
+        let now = Utc::now();
+        let first = now - Duration::days(9);
+        repository.connection().execute(
+            "INSERT INTO health_score_periods(vehicle_id,granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at) VALUES(1,'day',?1,?2,95,1,'scored',10,12000,100,1,'a','b','c',?2)",
+            params![first.to_rfc3339(), (first + Duration::hours(5)).to_rfc3339()],
+        ).unwrap();
+        for session in 0..10_i64 {
+            let start = first + Duration::minutes(session * 25);
+            for at in [start, start + Duration::minutes(20)] {
+                repository.connection().execute(
+                    "INSERT INTO ai_feature_windows(vehicle_id,session_id,period_start,started_at,schema_version,purpose,driving_state,values_json,missing_mask_json,data_quality,training_candidate) VALUES(1,?1,NULL,?2,'s','training',?3,'[]','[]',1,true)",
+                    params![session, at.to_rfc3339(), if session % 2 == 0 { "cruise" } else { "idle" }],
+                ).unwrap();
+            }
+        }
+        let readiness = repository.refresh_ai_training_readiness(now).unwrap();
+        assert!(matches!(readiness, TrainingReadiness::Ready(_)));
+        let accepted: u64 = repository
+            .connection()
+            .query_row(
+                "SELECT count(*) FROM ai_feature_windows WHERE training_accepted=true",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(accepted, 20);
+        assert!(repository.automatic_training_due(now).unwrap());
     }
 }

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,95 @@ pub struct Normalization {
     pub median: f64,
     pub mad: f64,
     pub scale: f64,
+}
+
+/// Immutable input contract stored with a model generation. Inference must use
+/// exactly these channels, in this order, and the training-time normalization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AiFeatureContract {
+    pub schema_version: String,
+    pub signal_keys: Vec<String>,
+    pub normalization: BTreeMap<String, Normalization>,
+}
+
+pub fn canonical_signal_key(name: &str) -> String {
+    let normalized = name.trim().to_ascii_lowercase();
+    if normalized.contains("engine rpm") || normalized == "rpm" {
+        "rpm".into()
+    } else if normalized.contains("vehicle speed") {
+        "vehicle_speed".into()
+    } else if normalized.contains("engine load") {
+        "engine_load".into()
+    } else if normalized.contains("coolant") && normalized.contains("temperature") {
+        "coolant_temperature".into()
+    } else {
+        normalized
+            .chars()
+            .map(|value| {
+                if value.is_ascii_alphanumeric() {
+                    value
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("_")
+    }
+}
+
+pub struct RealtimeAiCollector {
+    contract: AiFeatureContract,
+    samples: VecDeque<RawSignalSample>,
+    last_window: Option<DateTime<Utc>>,
+}
+
+impl RealtimeAiCollector {
+    pub fn new(contract: AiFeatureContract) -> Self {
+        Self {
+            contract,
+            samples: VecDeque::new(),
+            last_window: None,
+        }
+    }
+
+    pub fn observe(&mut self, name: &str, value: f64, at: DateTime<Utc>, slow: bool) {
+        let key = canonical_signal_key(name);
+        if value.is_finite() && self.contract.signal_keys.contains(&key) {
+            self.samples.push_back(RawSignalSample {
+                key,
+                value,
+                at,
+                slow,
+            });
+        }
+        let cutoff = at - Duration::seconds(WINDOW_SECONDS as i64 + 2);
+        while self
+            .samples
+            .front()
+            .is_some_and(|sample| sample.at < cutoff)
+        {
+            self.samples.pop_front();
+        }
+    }
+
+    pub fn take_due(&mut self, now: DateTime<Utc>) -> Option<FeatureWindow> {
+        if self
+            .last_window
+            .is_some_and(|last| now - last < Duration::seconds(INFERENCE_STRIDE_SECONDS as i64))
+        {
+            return None;
+        }
+        let samples = self.samples.iter().cloned().collect::<Vec<_>>();
+        let window = build_windows_with_contract(&samples, false, &self.contract).pop()?;
+        if now - window.started_at < Duration::seconds((WINDOW_SECONDS - 1) as i64) {
+            return None;
+        }
+        self.last_window = Some(now);
+        Some(window)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -176,12 +265,25 @@ pub fn build_windows(samples: &[RawSignalSample], training: bool) -> Vec<Feature
     if samples.is_empty() {
         return Vec::new();
     }
-    let (start, series, masks) = resample_one_second(samples);
+    let Some(contract) = feature_contract(samples, AI_FEATURE_SCHEMA_VERSION) else {
+        return Vec::new();
+    };
+    build_windows_with_contract(samples, training, &contract)
+}
+
+pub fn feature_contract(
+    samples: &[RawSignalSample],
+    schema_version: impl Into<String>,
+) -> Option<AiFeatureContract> {
+    if samples.is_empty() {
+        return None;
+    }
+    let (_, series, _) = resample_one_second(samples);
     let keys = select_signals(&series);
     if keys.is_empty() {
-        return Vec::new();
+        return None;
     }
-    let norms: BTreeMap<_, _> = keys
+    let normalization: BTreeMap<_, _> = keys
         .iter()
         .map(|k| {
             (
@@ -191,6 +293,35 @@ pub fn build_windows(samples: &[RawSignalSample], training: bool) -> Vec<Feature
             )
         })
         .collect();
+    Some(AiFeatureContract {
+        schema_version: schema_version.into(),
+        signal_keys: keys,
+        normalization,
+    })
+}
+
+pub fn build_windows_with_contract(
+    samples: &[RawSignalSample],
+    training: bool,
+    contract: &AiFeatureContract,
+) -> Vec<FeatureWindow> {
+    if samples.is_empty()
+        || !(MIN_SIGNALS..=MAX_SIGNALS).contains(&contract.signal_keys.len())
+        || contract
+            .signal_keys
+            .iter()
+            .any(|key| !contract.normalization.contains_key(key))
+    {
+        return Vec::new();
+    }
+    let (start, mut series, mut masks) = resample_one_second(samples);
+    let len = series.values().next().map_or(0, Vec::len);
+    for key in &contract.signal_keys {
+        series.entry(key.clone()).or_insert_with(|| vec![None; len]);
+        masks.entry(key.clone()).or_insert_with(|| vec![false; len]);
+    }
+    let keys = &contract.signal_keys;
+    let norms = &contract.normalization;
     let stride = if training {
         TRAINING_STRIDE_SECONDS
     } else {
@@ -218,9 +349,9 @@ pub fn build_windows(samples: &[RawSignalSample], training: bool) -> Vec<Feature
         let observed = observed_mask.iter().flatten().filter(|v| **v).count();
         let quality = observed as f64 / (keys.len() * WINDOW_SECONDS) as f64;
         out.push(FeatureWindow {
-            schema_version: AI_FEATURE_SCHEMA_VERSION.into(),
+            schema_version: contract.schema_version.clone(),
             started_at: start + Duration::seconds(offset as i64),
-            signal_keys: keys.clone(),
+            signal_keys: contract.signal_keys.clone(),
             values,
             observed_mask,
             state: classify_window(&series, offset),
@@ -316,5 +447,120 @@ mod tests {
     fn windows_are_reproducible() {
         let x = sample_series(None);
         assert_eq!(build_windows(&x, true), build_windows(&x, true));
+    }
+
+    #[test]
+    fn inference_uses_the_training_contract_without_recentering() {
+        let keys = ["rpm", "vehicle_speed", "engine_load", "coolant_temperature"];
+        let contract = AiFeatureContract {
+            schema_version: "vehicle-1-v1".into(),
+            signal_keys: keys.iter().map(|key| (*key).into()).collect(),
+            normalization: keys
+                .iter()
+                .map(|key| {
+                    (
+                        (*key).into(),
+                        Normalization {
+                            median: 10.0,
+                            mad: 1.0,
+                            scale: 2.0,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let shifted = (0..60)
+            .flat_map(|second| {
+                keys.iter().map(move |key| RawSignalSample {
+                    key: (*key).into(),
+                    value: 20.0,
+                    at: at(second),
+                    slow: false,
+                })
+            })
+            .collect::<Vec<_>>();
+        let windows = build_windows_with_contract(&shifted, false, &contract);
+        assert_eq!(windows.len(), 1);
+        assert!(
+            windows[0]
+                .values
+                .iter()
+                .flatten()
+                .all(|value| *value == 5.0)
+        );
+        assert_eq!(windows[0].signal_keys, contract.signal_keys);
+        assert_eq!(windows[0].schema_version, "vehicle-1-v1");
+    }
+
+    #[test]
+    fn missing_contract_channel_is_masked_instead_of_reordered() {
+        let keys = ["a", "b", "c", "missing"];
+        let contract = AiFeatureContract {
+            schema_version: "v1".into(),
+            signal_keys: keys.iter().map(|key| (*key).into()).collect(),
+            normalization: keys
+                .iter()
+                .map(|key| {
+                    (
+                        (*key).into(),
+                        Normalization {
+                            median: 0.0,
+                            mad: 1.0,
+                            scale: 1.0,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let samples = (0..60)
+            .flat_map(|second| {
+                ["a", "b", "c"].map(|key| RawSignalSample {
+                    key: key.into(),
+                    value: second as f64,
+                    at: at(second),
+                    slow: false,
+                })
+            })
+            .collect::<Vec<_>>();
+        let window = build_windows_with_contract(&samples, false, &contract).remove(0);
+        assert!(window.observed_mask[3].iter().all(|observed| !observed));
+        assert_eq!(window.quality, 0.75);
+    }
+
+    #[test]
+    fn realtime_collector_uses_canonical_names_and_five_second_cadence() {
+        let names = [
+            "Engine RPM",
+            "Vehicle speed",
+            "Calculated engine load",
+            "Engine coolant temperature",
+        ];
+        let keys = ["rpm", "vehicle_speed", "engine_load", "coolant_temperature"];
+        let contract = AiFeatureContract {
+            schema_version: "v1".into(),
+            signal_keys: keys.iter().map(|key| (*key).into()).collect(),
+            normalization: keys
+                .iter()
+                .map(|key| {
+                    (
+                        (*key).into(),
+                        Normalization {
+                            median: 0.0,
+                            mad: 1.0,
+                            scale: 1.0,
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let mut collector = RealtimeAiCollector::new(contract);
+        for second in 0..60 {
+            for name in names {
+                collector.observe(name, second as f64, at(second), false);
+            }
+        }
+        assert!(collector.take_due(at(59)).is_some());
+        assert!(collector.take_due(at(63)).is_none());
+        assert!(collector.take_due(at(64)).is_some());
     }
 }

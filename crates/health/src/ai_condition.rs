@@ -8,6 +8,18 @@ pub const MIN_DISPLAY_CONFIDENCE: f64 = 0.60;
 pub const PREPARATION_SECONDS: i64 = 60;
 pub const INFERENCE_INTERVAL_SECONDS: i64 = 5;
 
+pub fn condition_band(score: Option<f64>, confidence: f64) -> &'static str {
+    if score.is_none() || confidence < MIN_DISPLAY_CONFIDENCE {
+        "データ不足"
+    } else if score.is_some_and(|value| value < 40.0) {
+        "普段との差が大きい"
+    } else if score.is_some_and(|value| value < 70.0) {
+        "普段との差あり"
+    } else {
+        "普段どおり"
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct InferenceSchedule {
     started_at: Option<DateTime<Utc>>,
@@ -190,8 +202,9 @@ pub fn evaluate_session(windows: &[AiWindowResult]) -> SessionAiEvaluation {
     }
     let continuous_score = 100.0 * (1.0 - longest as f64 / usable.len() as f64);
     let coverage = usable.iter().map(|w| w.coverage).sum::<f64>() / usable.len() as f64;
-    let confidence =
-        usable.iter().map(|w| w.confidence).sum::<f64>() / usable.len() as f64 * coverage;
+    // Window confidence already includes coverage. Multiplying by coverage a
+    // second time would square the data-quality penalty.
+    let confidence = usable.iter().map(|w| w.confidence).sum::<f64>() / usable.len() as f64;
     SessionAiEvaluation {
         score: Some((0.6 * median + 0.3 * bad_tenth + 0.1 * continuous_score).clamp(0.0, 100.0)),
         confidence: confidence.clamp(0.0, 1.0),
@@ -372,6 +385,14 @@ mod tests {
         w.confidence = 0.8;
         assert_eq!(w.display(), AiDisplay::Normal)
     }
+    #[test]
+    fn condition_bands_do_not_claim_vehicle_health() {
+        assert_eq!(condition_band(None, 1.0), "データ不足");
+        assert_eq!(condition_band(Some(90.0), 0.59), "データ不足");
+        assert_eq!(condition_band(Some(90.0), 0.8), "普段どおり");
+        assert_eq!(condition_band(Some(55.0), 0.8), "普段との差あり");
+        assert_eq!(condition_band(Some(20.0), 0.8), "普段との差が大きい");
+    }
     fn window(s: f64) -> AiWindowResult {
         AiWindowResult {
             request_id: s.to_string(),
@@ -393,6 +414,15 @@ mod tests {
         let mut x = vec![window(90.); 9];
         x.push(window(10.));
         assert!(evaluate_session(&x).score.unwrap() > 70.)
+    }
+    #[test]
+    fn session_confidence_does_not_square_window_coverage() {
+        let mut value = window(80.0);
+        value.coverage = 0.8;
+        value.confidence = 0.8;
+        let evaluated = evaluate_session(&[value]);
+        assert_eq!(evaluated.coverage, 0.8);
+        assert_eq!(evaluated.confidence, 0.8);
     }
     #[test]
     fn weights_and_disagreement() {

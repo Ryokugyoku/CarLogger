@@ -45,11 +45,15 @@ def chronological_split(session_ids: list[str]) -> dict[str, list[str]]:
     test_count = max(3, math.ceil(len(unique) * 0.15))
     remaining = len(unique) - test_count
     validation_count = max(1, math.ceil(len(unique) * 0.15))
-    if remaining - validation_count < 1:
+    calibration_count = max(1, math.ceil(len(unique) * 0.15))
+    if remaining - validation_count - calibration_count < 1:
         raise ValueError("insufficient sessions for leak-free split")
+    train_end = remaining - validation_count - calibration_count
+    validation_end = train_end + validation_count
     return {
-        "train": unique[: remaining - validation_count],
-        "validation": unique[remaining - validation_count : remaining],
+        "train": unique[:train_end],
+        "validation": unique[train_end:validation_end],
+        "calibration": unique[validation_end:remaining],
         "test": unique[remaining:],
     }
 
@@ -61,11 +65,13 @@ def calibrate(errors: np.ndarray) -> dict[str, float]:
     median, p95, p99 = np.percentile(values, [50, 95, 99])
     # Keep interpolation denominators positive for constant distributions.
     epsilon = max(abs(float(p99)) * 1e-9, 1e-12)
+    tail_width = max(float(p99 - p95), epsilon)
     return {
         "median": float(median),
         "p95": float(max(p95, median + epsilon)),
         "p99": float(max(p99, p95 + epsilon)),
-        "max": float(max(values.max(), p99 + epsilon)),
+        # A single historical outlier must not stretch every future low score.
+        "max": float(p99 + 4.0 * tail_width),
     }
 
 
@@ -229,8 +235,11 @@ def train(payload: dict[str, Any], data_dir: Path, tf: Any) -> dict[str, Any]:
     if stopper.cancelled:
         raise TrainingCancelled("training cancelled or exceeded 30 minutes")
 
+    calibration_errors = _errors(
+        model, values[indices["calibration"]], masks[indices["calibration"]], batch
+    )
+    calibration = calibrate(calibration_errors)
     test_errors = _errors(model, values[indices["test"]], masks[indices["test"]], batch)
-    calibration = calibrate(test_errors)
     false_positive_rate = float(np.mean(test_errors > calibration["p95"]))
     synthetic = values[indices["test"]].copy()
     synthetic[:, 20:40, :] += 3.0

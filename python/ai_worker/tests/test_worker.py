@@ -75,9 +75,12 @@ def test_chronological_split_has_no_session_leak_and_three_test_sessions():
     sessions = [f"s{i}" for i in range(12)]
     split = chronological_split(sessions)
     assert len(split["test"]) >= 3
-    assert split["train"] + split["validation"] + split["test"] == sessions
+    assert split["train"] + split["validation"] + split["calibration"] + split["test"] == sessions
     assert set(split["train"]).isdisjoint(split["validation"])
     assert set(split["train"]).isdisjoint(split["test"])
+    assert set(split["train"]).isdisjoint(split["calibration"])
+    assert set(split["validation"]).isdisjoint(split["calibration"])
+    assert set(split["calibration"]).isdisjoint(split["test"])
     assert set(split["validation"]).isdisjoint(split["test"])
 
 
@@ -93,6 +96,12 @@ def test_calibration_boundaries_are_finite_and_bounded():
     assert 40 <= calibrated_score(calibration["p99"], calibration) <= 70
     assert calibrated_score(float("nan"), calibration) == 0
     assert 0 <= calibrated_score(1e100, calibration) <= 100
+
+
+def test_single_outlier_does_not_stretch_the_low_score_tail():
+    np = __import__("numpy")
+    calibration = calibrate(np.array([*range(1, 101), 1_000_000], dtype=float))
+    assert calibration["max"] < 1_000
 
 
 def test_pi_4gb_profile_is_bounded():

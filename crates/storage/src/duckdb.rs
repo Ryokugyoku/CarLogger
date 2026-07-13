@@ -288,12 +288,12 @@ impl DuckdbCanFrameRepository {
                     PRIMARY KEY(schema_version, signal_key)
                 );
                 CREATE TABLE IF NOT EXISTS ai_feature_windows (
-                    session_id BIGINT, period_start TEXT, started_at TEXT NOT NULL,
+                    vehicle_id BIGINT NOT NULL, session_id BIGINT, period_start TEXT, started_at TEXT NOT NULL,
                     schema_version TEXT NOT NULL, purpose TEXT NOT NULL, driving_state TEXT NOT NULL,
                     values_json TEXT NOT NULL, missing_mask_json TEXT NOT NULL, data_quality DOUBLE NOT NULL,
                     training_candidate BOOLEAN NOT NULL, training_accepted BOOLEAN,
                     training_decision_reason TEXT,
-                    PRIMARY KEY(started_at, schema_version, purpose)
+                    PRIMARY KEY(vehicle_id, started_at, schema_version, purpose)
                 );
                 CREATE TABLE IF NOT EXISTS ai_model_current (
                     scope TEXT PRIMARY KEY, generation TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -301,37 +301,94 @@ impl DuckdbCanFrameRepository {
                 CREATE SEQUENCE IF NOT EXISTS ai_inference_results_sequence;
                 CREATE TABLE IF NOT EXISTS ai_inference_results (
                     id BIGINT PRIMARY KEY DEFAULT nextval('ai_inference_results_sequence'),
-                    request_id TEXT UNIQUE NOT NULL, session_id BIGINT, window_start TEXT NOT NULL,
+                    request_id TEXT UNIQUE NOT NULL, vehicle_id BIGINT NOT NULL, session_id BIGINT, window_start TEXT NOT NULL,
                     reconstruction_error DOUBLE NOT NULL, anomaly DOUBLE NOT NULL, ai_score DOUBLE,
                     confidence DOUBLE NOT NULL, data_coverage DOUBLE NOT NULL, model_id TEXT NOT NULL,
                     feature_schema TEXT NOT NULL, driving_state TEXT NOT NULL,
                     contributions_json TEXT NOT NULL, completed_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS ai_condition_periods (
-                    granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+                    vehicle_id BIGINT NOT NULL, granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
                     ai_score DOUBLE, confidence DOUBLE NOT NULL, data_coverage DOUBLE NOT NULL,
                     status TEXT NOT NULL, window_count UBIGINT NOT NULL, calculated_at TEXT NOT NULL,
-                    PRIMARY KEY(granularity,period_start,period_end)
+                    PRIMARY KEY(vehicle_id,granularity,period_start,period_end)
                 );
                 CREATE TABLE IF NOT EXISTS overall_condition_periods (
-                    granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+                    vehicle_id BIGINT NOT NULL, granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
                     statistical_score DOUBLE, ai_score DOUBLE, overall_score DOUBLE,
                     statistical_weight DOUBLE NOT NULL, ai_weight DOUBLE NOT NULL,
                     ai_confidence DOUBLE NOT NULL, model_maturity DOUBLE NOT NULL,
                     provisional BOOLEAN NOT NULL, disagreement BOOLEAN NOT NULL,
                     explanation TEXT NOT NULL, calculated_at TEXT NOT NULL,
-                    PRIMARY KEY(granularity,period_start,period_end)
+                    PRIMARY KEY(vehicle_id,granularity,period_start,period_end)
                 );
                 CREATE SEQUENCE IF NOT EXISTS ai_notifications_sequence;
                 CREATE TABLE IF NOT EXISTS ai_notifications (
                     id BIGINT PRIMARY KEY DEFAULT nextval('ai_notifications_sequence'),
-                    session_id BIGINT, kind TEXT NOT NULL, observed_at TEXT NOT NULL,
+                    vehicle_id BIGINT NOT NULL, session_id BIGINT, kind TEXT NOT NULL, observed_at TEXT NOT NULL,
                     message TEXT NOT NULL
                 );
                 "#,
             )
             .context("DuckDBログスキーマの初期化に失敗しました")?;
 
+        self.migrate_vehicle_scoped_ai_tables()?;
+
+        Ok(())
+    }
+
+    fn migrate_vehicle_scoped_ai_tables(&self) -> Result<()> {
+        let has_vehicle_id: bool = self.connection.query_row(
+            "SELECT count(*) > 0 FROM pragma_table_info('ai_feature_windows') WHERE name='vehicle_id'",
+            [],
+            |row| row.get(0),
+        )?;
+        if has_vehicle_id {
+            return Ok(());
+        }
+        self.connection.execute_batch(
+            r#"
+            BEGIN TRANSACTION;
+            ALTER TABLE ai_feature_windows RENAME TO ai_feature_windows_legacy;
+            CREATE TABLE ai_feature_windows (
+                vehicle_id BIGINT NOT NULL, session_id BIGINT, period_start TEXT, started_at TEXT NOT NULL,
+                schema_version TEXT NOT NULL, purpose TEXT NOT NULL, driving_state TEXT NOT NULL,
+                values_json TEXT NOT NULL, missing_mask_json TEXT NOT NULL, data_quality DOUBLE NOT NULL,
+                training_candidate BOOLEAN NOT NULL, training_accepted BOOLEAN,
+                training_decision_reason TEXT,
+                PRIMARY KEY(vehicle_id, started_at, schema_version, purpose)
+            );
+            INSERT INTO ai_feature_windows SELECT 0, * FROM ai_feature_windows_legacy;
+            DROP TABLE ai_feature_windows_legacy;
+
+            ALTER TABLE ai_condition_periods RENAME TO ai_condition_periods_legacy;
+            CREATE TABLE ai_condition_periods (
+                vehicle_id BIGINT NOT NULL, granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+                ai_score DOUBLE, confidence DOUBLE NOT NULL, data_coverage DOUBLE NOT NULL,
+                status TEXT NOT NULL, window_count UBIGINT NOT NULL, calculated_at TEXT NOT NULL,
+                PRIMARY KEY(vehicle_id,granularity,period_start,period_end)
+            );
+            INSERT INTO ai_condition_periods SELECT 0, * FROM ai_condition_periods_legacy;
+            DROP TABLE ai_condition_periods_legacy;
+
+            ALTER TABLE overall_condition_periods RENAME TO overall_condition_periods_legacy;
+            CREATE TABLE overall_condition_periods (
+                vehicle_id BIGINT NOT NULL, granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
+                statistical_score DOUBLE, ai_score DOUBLE, overall_score DOUBLE,
+                statistical_weight DOUBLE NOT NULL, ai_weight DOUBLE NOT NULL,
+                ai_confidence DOUBLE NOT NULL, model_maturity DOUBLE NOT NULL,
+                provisional BOOLEAN NOT NULL, disagreement BOOLEAN NOT NULL,
+                explanation TEXT NOT NULL, calculated_at TEXT NOT NULL,
+                PRIMARY KEY(vehicle_id,granularity,period_start,period_end)
+            );
+            INSERT INTO overall_condition_periods SELECT 0, * FROM overall_condition_periods_legacy;
+            DROP TABLE overall_condition_periods_legacy;
+
+            ALTER TABLE ai_inference_results ADD COLUMN vehicle_id BIGINT DEFAULT 0;
+            ALTER TABLE ai_notifications ADD COLUMN vehicle_id BIGINT DEFAULT 0;
+            COMMIT;
+            "#,
+        ).context("AIデータの車両分離マイグレーションに失敗しました")?;
         Ok(())
     }
 
@@ -495,6 +552,11 @@ impl DuckdbCanFrameRepository {
             self.connection.execute("DELETE FROM health_score_components WHERE score_id IN (SELECT id FROM health_score_periods WHERE vehicle_id=?1)", params![vehicle_id])?;
             self.connection.execute("DELETE FROM health_session_features WHERE session_id IN (SELECT id FROM driving_sessions WHERE vehicle_id=?1)", params![vehicle_id])?;
             for table in [
+                "ai_inference_results",
+                "ai_condition_periods",
+                "overall_condition_periods",
+                "ai_notifications",
+                "ai_feature_windows",
                 "health_score_periods",
                 "health_baselines",
                 "health_backfill_state",
@@ -511,6 +573,15 @@ impl DuckdbCanFrameRepository {
                     params![vehicle_id],
                 )?;
             }
+            let scope = format!("vehicle-{vehicle_id}");
+            self.connection.execute(
+                "DELETE FROM ai_model_current WHERE scope=?1",
+                params![scope],
+            )?;
+            self.connection.execute(
+                "DELETE FROM ai_model_generations WHERE scope=?1",
+                params![scope],
+            )?;
             Ok(())
         })();
         match result {
@@ -644,6 +715,34 @@ mod tests {
         assert!(db_path.parent().unwrap().exists());
         assert!(db_path.exists());
         assert_eq!(repo.list_can_id_observations().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn legacy_ai_tables_are_migrated_to_vehicle_scope() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("legacy-ai.duckdb");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(r#"
+            CREATE TABLE ai_feature_windows (session_id BIGINT,period_start TEXT,started_at TEXT,schema_version TEXT,purpose TEXT,driving_state TEXT,values_json TEXT,missing_mask_json TEXT,data_quality DOUBLE,training_candidate BOOLEAN,training_accepted BOOLEAN,training_decision_reason TEXT,PRIMARY KEY(started_at,schema_version,purpose));
+            CREATE TABLE ai_condition_periods (granularity TEXT,period_start TEXT,period_end TEXT,ai_score DOUBLE,confidence DOUBLE,data_coverage DOUBLE,status TEXT,window_count UBIGINT,calculated_at TEXT,PRIMARY KEY(granularity,period_start,period_end));
+            CREATE TABLE overall_condition_periods (granularity TEXT,period_start TEXT,period_end TEXT,statistical_score DOUBLE,ai_score DOUBLE,overall_score DOUBLE,statistical_weight DOUBLE,ai_weight DOUBLE,ai_confidence DOUBLE,model_maturity DOUBLE,provisional BOOLEAN,disagreement BOOLEAN,explanation TEXT,calculated_at TEXT,PRIMARY KEY(granularity,period_start,period_end));
+            CREATE TABLE ai_inference_results (id BIGINT,request_id TEXT UNIQUE,session_id BIGINT,window_start TEXT,reconstruction_error DOUBLE,anomaly DOUBLE,ai_score DOUBLE,confidence DOUBLE,data_coverage DOUBLE,model_id TEXT,feature_schema TEXT,driving_state TEXT,contributions_json TEXT,completed_at TEXT);
+            CREATE TABLE ai_notifications (id BIGINT,session_id BIGINT,kind TEXT,observed_at TEXT,message TEXT);
+            INSERT INTO ai_condition_periods VALUES('day','2026-01-01','2026-01-02',80,0.9,0.8,'available',2,'2026-01-02');
+        "#).unwrap();
+        drop(connection);
+        let repository = DuckdbCanFrameRepository::open(&path).unwrap();
+        let migrated: (i64, f64) = repository
+            .connection
+            .query_row(
+                "SELECT vehicle_id,ai_score FROM ai_condition_periods",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(migrated, (0, 80.0));
+        drop(repository);
+        DuckdbCanFrameRepository::open(&path).unwrap();
     }
 
     #[test]

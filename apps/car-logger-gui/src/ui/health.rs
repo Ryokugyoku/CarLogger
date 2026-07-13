@@ -162,7 +162,8 @@ impl HealthView {
         }
         vehicle_selector.set_active((!vehicles.is_empty()).then_some(0));
         widgets.page.prepend(&vehicle_selector);
-        let ai_panel = AiConditionPanel::new(database_path.clone(), read_only, parent);
+        let ai_panel =
+            AiConditionPanel::new(database_path.clone(), read_only, parent, vehicle_id.clone());
         widgets.page.append(ai_panel.widget());
         let selection = Rc::new(RefCell::new(Selection::default()));
         let series = Rc::new(RefCell::new(Vec::<StoredHealthScore>::new()));
@@ -235,6 +236,8 @@ impl HealthView {
             initial_sender,
             #[strong]
             database_path,
+            #[strong]
+            ai_panel,
             move |selector| {
                 if let Some(id) = selector.active_id().and_then(|value| value.parse().ok()) {
                     vehicle_id.set(id);
@@ -245,6 +248,7 @@ impl HealthView {
                         initial_sender.clone(),
                         id,
                     );
+                    ai_panel.reload();
                 }
             }
         ));

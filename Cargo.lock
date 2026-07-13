@@ -461,6 +461,7 @@ dependencies = [
  "car-logger-ai-worker",
  "car-logger-application",
  "car-logger-domain",
+ "car-logger-health",
  "car-logger-storage",
  "car-logger-transport",
  "chrono",
