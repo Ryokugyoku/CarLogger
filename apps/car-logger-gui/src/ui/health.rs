@@ -1,14 +1,14 @@
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
 
 use car_logger_application::{
-    DiagnosticDashboardData, DiagnosticRepository, HealthDashboardData, HealthService,
-    ScoreGranularity, ScoreStatus, StoredComponent, StoredHealthScore,
+    DiagnosticDashboardData, HealthDashboardData, HealthService, ScoreGranularity, ScoreStatus,
+    StoredComponent, StoredHealthScore,
 };
-use car_logger_storage::DuckdbCanFrameRepository;
+use car_logger_storage::SharedDuckdbRepository;
 use chrono::{DateTime, Local, TimeDelta, Utc};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use gtk::prelude::*;
@@ -151,6 +151,7 @@ impl HealthView {
         read_only: bool,
         parent: &gtk::ApplicationWindow,
         vehicles: Vec<car_logger_domain::Vehicle>,
+        shared_log: Option<SharedDuckdbRepository>,
     ) -> Self {
         let widgets = Rc::new(build_widgets(&translation_manager));
         let vehicle_id = Rc::new(Cell::new(
@@ -162,8 +163,13 @@ impl HealthView {
         }
         vehicle_selector.set_active((!vehicles.is_empty()).then_some(0));
         widgets.page.prepend(&vehicle_selector);
-        let ai_panel =
-            AiConditionPanel::new(database_path.clone(), read_only, parent, vehicle_id.clone());
+        let ai_panel = AiConditionPanel::new(
+            database_path.clone(),
+            read_only,
+            parent,
+            vehicle_id.clone(),
+            shared_log.clone(),
+        );
         widgets.page.append(ai_panel.widget());
         let selection = Rc::new(RefCell::new(Selection::default()));
         let series = Rc::new(RefCell::new(Vec::<StoredHealthScore>::new()));
@@ -181,21 +187,21 @@ impl HealthView {
         setup_granularity_buttons(
             &widgets,
             selection.clone(),
-            database_path.clone(),
+            shared_log.clone(),
             sender.clone(),
             vehicle_id.clone(),
         );
         setup_navigation(
             &widgets,
             selection.clone(),
-            database_path.clone(),
+            shared_log.clone(),
             sender.clone(),
             vehicle_id.clone(),
         );
         let initial_sender = sender.clone();
         setup_recalculation(
             &widgets,
-            database_path.clone(),
+            shared_log.clone(),
             read_only,
             parent,
             sender,
@@ -209,7 +215,7 @@ impl HealthView {
             series,
             recalculating,
             alive,
-            database_path.clone(),
+            shared_log.clone(),
             initial_sender.clone(),
             vehicle_id.clone(),
         );
@@ -222,7 +228,7 @@ impl HealthView {
             widgets.recalculate_result.set_text(&translate("Read-only"));
         }
         request_load(
-            &database_path,
+            shared_log.clone(),
             &selection.borrow(),
             initial_sender.clone(),
             vehicle_id.get(),
@@ -235,7 +241,7 @@ impl HealthView {
             #[strong]
             initial_sender,
             #[strong]
-            database_path,
+            shared_log,
             #[strong]
             ai_panel,
             move |selector| {
@@ -243,7 +249,7 @@ impl HealthView {
                     vehicle_id.set(id);
                     selection.borrow_mut().generation += 1;
                     request_load(
-                        &database_path,
+                        shared_log.clone(),
                         &selection.borrow(),
                         initial_sender.clone(),
                         id,
@@ -478,7 +484,7 @@ fn label(text: &str, class: &str) -> Label {
 fn setup_granularity_buttons(
     widgets: &Rc<Widgets>,
     selection: Rc<RefCell<Selection>>,
-    path: PathBuf,
+    shared_log: Option<SharedDuckdbRepository>,
     sender: Sender<WorkerEvent>,
     vehicle_id: Rc<Cell<i64>>,
 ) {
@@ -494,7 +500,7 @@ fn setup_granularity_buttons(
                 #[strong]
                 selection,
                 #[strong]
-                path,
+                shared_log,
                 #[strong]
                 sender,
                 #[strong]
@@ -502,7 +508,12 @@ fn setup_granularity_buttons(
                 move |button| {
                     if button.is_active() {
                         selection.borrow_mut().select(granularity);
-                        request_load(&path, &selection.borrow(), sender.clone(), vehicle_id.get());
+                        request_load(
+                            shared_log.clone(),
+                            &selection.borrow(),
+                            sender.clone(),
+                            vehicle_id.get(),
+                        );
                     }
                 }
             ));
@@ -527,7 +538,7 @@ fn find_widget<T: IsA<gtk::Widget>>(root: &gtk::Widget, name: &str) -> Option<T>
 fn setup_navigation(
     widgets: &Rc<Widgets>,
     selection: Rc<RefCell<Selection>>,
-    path: PathBuf,
+    shared_log: Option<SharedDuckdbRepository>,
     sender: Sender<WorkerEvent>,
     vehicle_id: Rc<Cell<i64>>,
 ) {
@@ -537,29 +548,39 @@ fn setup_navigation(
                 #[strong]
                 selection,
                 #[strong]
-                path,
+                shared_log,
                 #[strong]
                 sender,
                 #[strong]
                 vehicle_id,
                 move |_| {
                     selection.borrow_mut().move_window(direction);
-                    request_load(&path, &selection.borrow(), sender.clone(), vehicle_id.get());
+                    request_load(
+                        shared_log.clone(),
+                        &selection.borrow(),
+                        sender.clone(),
+                        vehicle_id.get(),
+                    );
                 }
             ));
         }
     }
 }
 
-fn request_load(path: &Path, selection: &Selection, sender: Sender<WorkerEvent>, vehicle_id: i64) {
-    let path = path.to_path_buf();
+fn request_load(
+    shared_log: Option<SharedDuckdbRepository>,
+    selection: &Selection,
+    sender: Sender<WorkerEvent>,
+    vehicle_id: i64,
+) {
     let generation = selection.generation;
     let granularity = selection.granularity;
     let (start, end) = selection.range();
     thread::spawn(move || {
         let result = (|| {
-            let mut repository = DuckdbCanFrameRepository::open_read_only(path)?;
-            repository.select_vehicle(vehicle_id);
+            let repository = shared_log
+                .ok_or_else(|| anyhow::anyhow!("ログDB接続が利用できません"))?
+                .for_vehicle(vehicle_id);
             let diagnostics = repository.diagnostic_dashboard(100)?;
             let health = HealthService::new(repository).dashboard(
                 granularity,
@@ -579,21 +600,21 @@ fn request_load(path: &Path, selection: &Selection, sender: Sender<WorkerEvent>,
 
 fn setup_recalculation(
     widgets: &Rc<Widgets>,
-    path: PathBuf,
+    shared_log: Option<SharedDuckdbRepository>,
     read_only: bool,
     parent: &gtk::ApplicationWindow,
     sender: Sender<WorkerEvent>,
     running: Rc<Cell<bool>>,
     vehicle_id: Rc<Cell<i64>>,
 ) {
-    widgets.recalculate.connect_clicked(glib::clone!(#[weak] parent, #[strong] running, #[strong] widgets, move |_| {
+    widgets.recalculate.connect_clicked(glib::clone!(#[weak] parent, #[strong] running, #[strong] widgets, #[strong] shared_log, #[strong] sender, #[strong] vehicle_id, move |_| {
         if read_only || running.get() { return; }
         let dialog = MessageDialog::builder()
             .transient_for(&parent).modal(true)
             .text(translate("Recalculate all health scores?"))
             .secondary_text(translate("Raw logs will not be deleted or changed. Processing continues in the background."))
             .buttons(gtk::ButtonsType::OkCancel).build();
-        let path = path.clone();
+        let shared_log = shared_log.clone();
         let sender = sender.clone();
         let running = running.clone();
         let widgets = widgets.clone();
@@ -603,12 +624,13 @@ fn setup_recalculation(
             if response != gtk::ResponseType::Ok || running.replace(true) { return; }
             widgets.recalculate.set_sensitive(false);
             widgets.recalculate_result.set_text(&translate("Recalculation in progress"));
-            let path = path.clone();
+            let shared_log = shared_log.clone();
             let sender = sender.clone();
             let selected_vehicle_id = vehicle_id.get();
             thread::spawn(move || {
-                let result = DuckdbCanFrameRepository::open(path)
-                    .map(|mut repository| { repository.select_vehicle(selected_vehicle_id); HealthService::new(repository) })
+                let result = shared_log
+                    .ok_or_else(|| anyhow::anyhow!("ログDB接続が利用できません"))
+                    .map(|repository| HealthService::new(repository.for_vehicle(selected_vehicle_id)))
                     .and_then(|mut service| service.recalculate_all(RECALCULATE_CHUNK_SIZE))
                     .map(|_| ()).map_err(|error| error.to_string());
                 let _ = sender.send(WorkerEvent::Recalculated(result));
@@ -626,7 +648,7 @@ fn poll_worker(
     series: Rc<RefCell<Vec<StoredHealthScore>>>,
     recalculating: Rc<Cell<bool>>,
     alive: Rc<Cell<bool>>,
-    path: PathBuf,
+    shared_log: Option<SharedDuckdbRepository>,
     sender: Sender<WorkerEvent>,
     vehicle_id: Rc<Cell<i64>>,
 ) {
@@ -662,7 +684,7 @@ fn poll_worker(
                                 .set_text(&translate("Recalculation completed"));
                             selection.borrow_mut().generation += 1;
                             request_load(
-                                &path,
+                                shared_log.clone(),
                                 &selection.borrow(),
                                 sender.clone(),
                                 vehicle_id.get(),

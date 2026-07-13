@@ -1,13 +1,13 @@
 use std::{
     cell::{Cell, RefCell},
-    path::{Path, PathBuf},
+    path::PathBuf,
     rc::Rc,
     thread,
     time::Duration,
 };
 
 use car_logger_ai_worker::Worker;
-use car_logger_storage::{AiUiSnapshot, DuckdbCanFrameRepository};
+use car_logger_storage::{AiUiSnapshot, DuckdbCanFrameRepository, SharedDuckdbRepository};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use gtk::prelude::*;
 use gtk::{
@@ -25,9 +25,9 @@ enum Event {
 #[derive(Clone)]
 pub struct AiConditionPanel {
     root: GtkBox,
-    path: PathBuf,
     vehicle_id: Rc<Cell<i64>>,
     tx: Sender<Event>,
+    shared_log: Option<SharedDuckdbRepository>,
 }
 
 struct Widgets {
@@ -59,6 +59,7 @@ impl AiConditionPanel {
         read_only: bool,
         parent: &gtk::ApplicationWindow,
         vehicle_id: Rc<Cell<i64>>,
+        shared_log: Option<SharedDuckdbRepository>,
     ) -> Self {
         let widgets = Rc::new(build());
         let alive = Rc::new(Cell::new(true));
@@ -68,28 +69,39 @@ impl AiConditionPanel {
             move |_| alive.set(false)
         ));
         let (tx, rx) = unbounded();
-        wire(&widgets, path.clone(), read_only, parent, tx.clone());
+        wire(
+            &widgets,
+            path.clone(),
+            shared_log.clone(),
+            read_only,
+            parent,
+            tx.clone(),
+        );
         poll(
             rx,
             widgets.clone(),
             alive,
-            path.clone(),
             tx.clone(),
             vehicle_id.clone(),
+            shared_log.clone(),
         );
-        load(path.clone(), vehicle_id.get(), tx.clone());
+        load(shared_log.clone(), vehicle_id.get(), tx.clone());
         Self {
             root: widgets.root.clone(),
-            path,
             vehicle_id,
             tx,
+            shared_log,
         }
     }
     pub fn widget(&self) -> &GtkBox {
         &self.root
     }
     pub fn reload(&self) {
-        load(self.path.clone(), self.vehicle_id.get(), self.tx.clone());
+        load(
+            self.shared_log.clone(),
+            self.vehicle_id.get(),
+            self.tx.clone(),
+        );
     }
 }
 
@@ -260,10 +272,11 @@ fn value_card(flow: &FlowBox, name: &str, value: &str, class: &str) -> Label {
     l
 }
 
-fn load(path: PathBuf, vehicle_id: i64, tx: Sender<Event>) {
+fn load(shared_log: Option<SharedDuckdbRepository>, vehicle_id: i64, tx: Sender<Event>) {
     thread::spawn(move || {
-        let result = DuckdbCanFrameRepository::open_read_only(path)
-            .and_then(|r| r.ai_ui_snapshot(vehicle_id))
+        let result = shared_log
+            .ok_or_else(|| anyhow::anyhow!("ログDB接続が利用できません"))
+            .and_then(|shared| shared.with(|repository| repository.ai_ui_snapshot(vehicle_id)))
             .map_err(|e| e.to_string());
         let _ = tx.send(Event::Loaded(vehicle_id, Box::new(result)));
     });
@@ -272,6 +285,7 @@ fn load(path: PathBuf, vehicle_id: i64, tx: Sender<Event>) {
 fn wire(
     w: &Rc<Widgets>,
     path: PathBuf,
+    shared_log: Option<SharedDuckdbRepository>,
     read_only: bool,
     parent: &gtk::ApplicationWindow,
     tx: Sender<Event>,
@@ -283,13 +297,13 @@ fn wire(
             #[strong]
             w,
             #[strong]
-            path,
+            shared_log,
             #[strong]
             tx,
             move |_| {
                 let auto = w.auto.is_active();
                 let paused = w.pause.is_active();
-                action(path.clone(), tx.clone(), move |r| {
+                action(shared_log.clone(), tx.clone(), move |r| {
                     r.set_ai_training_options(auto, paused)?;
                     Ok("Training settings updated".into())
                 });
@@ -325,7 +339,7 @@ fn wire(
     }
     if let Some(b) = find::<Button>(w.root.upcast_ref(), "reset") {
         b.set_sensitive(!read_only);
-        b.connect_clicked(glib::clone!(#[weak] parent, #[strong] path, #[strong] tx, move |_| { let d=MessageDialog::builder().transient_for(&parent).modal(true).text(translate("Reset AI model and derived data?")) .secondary_text(translate("Only AI models and AI-derived data are deleted. Raw OBD2 logs and statistical health scores are retained. Running training blocks this operation.")) .buttons(gtk::ButtonsType::OkCancel).build(); let path=path.clone(); let tx=tx.clone(); d.connect_response(move|d,r| { d.close(); if r==gtk::ResponseType::Ok { action(path.clone(),tx.clone(),|repo| { repo.reset_ai_data()?; Ok("AI data reset completed".into()) }); }}); d.present(); }));
+        b.connect_clicked(glib::clone!(#[weak] parent, #[strong] shared_log, #[strong] tx, move |_| { let d=MessageDialog::builder().transient_for(&parent).modal(true).text(translate("Reset AI model and derived data?")) .secondary_text(translate("Only AI models and AI-derived data are deleted. Raw OBD2 logs and statistical health scores are retained. Running training blocks this operation.")) .buttons(gtk::ButtonsType::OkCancel).build(); let shared_log=shared_log.clone(); let tx=tx.clone(); d.connect_response(move|d,r| { d.close(); if r==gtk::ResponseType::Ok { action(shared_log.clone(),tx.clone(),|repo| { repo.reset_ai_data()?; Ok("AI data reset completed".into()) }); }}); d.present(); }));
     }
 }
 
@@ -339,13 +353,14 @@ fn diagnostic(path: PathBuf, tx: Sender<Event>) {
         let _ = tx.send(Event::Action(result));
     });
 }
-fn action<F>(path: PathBuf, tx: Sender<Event>, f: F)
+fn action<F>(shared_log: Option<SharedDuckdbRepository>, tx: Sender<Event>, f: F)
 where
     F: FnOnce(&DuckdbCanFrameRepository) -> anyhow::Result<String> + Send + 'static,
 {
     thread::spawn(move || {
-        let result = DuckdbCanFrameRepository::open(path)
-            .and_then(|r| f(&r))
+        let result = shared_log
+            .ok_or_else(|| anyhow::anyhow!("ログDB接続が利用できません"))
+            .and_then(|shared| shared.with(|repository| f(repository)))
             .map_err(|e| e.to_string());
         let _ = tx.send(Event::Action(result));
     });
@@ -355,9 +370,9 @@ fn poll(
     rx: Receiver<Event>,
     w: Rc<Widgets>,
     alive: Rc<Cell<bool>>,
-    path: PathBuf,
     tx: Sender<Event>,
     vehicle_id: Rc<Cell<i64>>,
+    shared_log: Option<SharedDuckdbRepository>,
 ) {
     glib::timeout_add_local(Duration::from_millis(150), move || {
         if !alive.get() {
@@ -366,14 +381,16 @@ fn poll(
         for e in rx.try_iter() {
             match e {
                 Event::Loaded(loaded_vehicle, result) => match *result {
-                    Ok(s) if loaded_vehicle == vehicle_id.get() => render(&w, &s, &path, &tx),
+                    Ok(s) if loaded_vehicle == vehicle_id.get() => {
+                        render(&w, &s, &tx, shared_log.clone())
+                    }
                     Ok(_) => {}
                     Err(e) => w.action_result.set_text(&e),
                 },
                 Event::Action(Err(e)) => w.action_result.set_text(&e),
                 Event::Action(Ok(m)) => {
                     w.action_result.set_text(&translate(&m));
-                    load(path.clone(), vehicle_id.get(), tx.clone())
+                    load(shared_log.clone(), vehicle_id.get(), tx.clone())
                 }
             }
         }
@@ -381,7 +398,12 @@ fn poll(
     });
 }
 
-fn render(w: &Widgets, s: &AiUiSnapshot, path: &Path, tx: &Sender<Event>) {
+fn render(
+    w: &Widgets,
+    s: &AiUiSnapshot,
+    tx: &Sender<Event>,
+    shared_log: Option<SharedDuckdbRepository>,
+) {
     w.auto.set_active(s.auto_training);
     w.pause.set_active(s.training_paused);
     w.status.set_text(&translate(match s.job_status.as_str() {
@@ -455,11 +477,11 @@ fn render(w: &Widgets, s: &AiUiSnapshot, path: &Path, tx: &Sender<Event>) {
         if m.status == "superseded" {
             let b = Button::with_label(&translate("Rollback"));
             let generation = m.generation.clone();
-            let p = path.to_path_buf();
+            let shared_log = shared_log.clone();
             let t = tx.clone();
             b.connect_clicked(move |_| {
                 let g = generation.clone();
-                action(p.clone(), t.clone(), move |r| {
+                action(shared_log.clone(), t.clone(), move |r| {
                     r.rollback_ai_model(&g)?;
                     Ok(format!("Rolled back to {g}"))
                 });

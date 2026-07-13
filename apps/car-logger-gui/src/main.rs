@@ -237,7 +237,7 @@ fn build_ui(
         &dashboard_builder,
         realtime_state,
         translation_manager.clone(),
-        config::log_database_path(&database_path),
+        repository.as_ref().map(|repo| repo.shared_log()),
         is_connected.clone(),
         repository
             .as_ref()
@@ -284,6 +284,7 @@ fn build_ui(
             .as_ref()
             .and_then(|repo| repo.vehicles(false).ok())
             .unwrap_or_default(),
+        repository.as_ref().map(|repo| repo.shared_log()),
     );
     health_container.append(health_view.widget());
 

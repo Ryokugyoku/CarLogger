@@ -16,7 +16,7 @@ mod vehicles;
 
 pub use duckdb::DuckdbCanFrameRepository;
 pub use pid_logs::{PidRecalculationRequest, PidSampleInput, RecalculationReport};
-pub use repository::StorageRepository;
+pub use repository::{SharedDuckdbRepository, StorageRepository};
 pub use retention::{LogCompactionReport, LogRetentionPolicy};
 pub use sqlite::SqliteMasterRepository;
 pub use vehicles::{NewCanSignal, NewVehicle, PidScanRecord, VehicleAttribute};

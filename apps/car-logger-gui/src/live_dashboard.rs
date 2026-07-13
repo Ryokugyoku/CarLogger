@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8,10 +7,10 @@ use std::thread;
 use std::time::Duration;
 
 use car_logger_application::{
-    DiagnosticDashboardData, DiagnosticRepository, HealthDashboardData, HealthService,
-    RealtimeSignalState, RealtimeState, ScoreDomain, ScoreGranularity, ScoreStatus,
+    DiagnosticDashboardData, HealthDashboardData, HealthService, RealtimeSignalState,
+    RealtimeState, ScoreDomain, ScoreGranularity, ScoreStatus,
 };
-use car_logger_storage::DuckdbCanFrameRepository;
+use car_logger_storage::SharedDuckdbRepository;
 use chrono::{Local, TimeDelta, Utc};
 use crossbeam_channel::unbounded;
 use gtk::prelude::*;
@@ -194,11 +193,11 @@ pub fn setup_dashboard_refresh(
     builder: &gtk::Builder,
     realtime_state: Arc<RealtimeState>,
     translation_manager: Rc<RefCell<TranslationManager>>,
-    log_database_path: PathBuf,
+    shared_log: Option<SharedDuckdbRepository>,
     is_connected: Arc<AtomicBool>,
     vehicle_id: i64,
 ) {
-    setup_offline_summary(builder, log_database_path, vehicle_id);
+    setup_offline_summary(builder, shared_log, vehicle_id);
     let mode_stack: gtk::Stack = builder
         .object("dashboard_mode_stack")
         .expect("Could not find dashboard_mode_stack");
@@ -313,7 +312,11 @@ struct OfflineData {
     diagnostics: DiagnosticDashboardData,
 }
 
-fn setup_offline_summary(builder: &gtk::Builder, path: PathBuf, vehicle_id: i64) {
+fn setup_offline_summary(
+    builder: &gtk::Builder,
+    shared_log: Option<SharedDuckdbRepository>,
+    vehicle_id: i64,
+) {
     let score: Label = builder
         .object("offline_health_score")
         .expect("offline_health_score");
@@ -355,8 +358,9 @@ fn setup_offline_summary(builder: &gtk::Builder, path: PathBuf, vehicle_id: i64)
     let (sender, receiver) = unbounded();
     thread::spawn(move || {
         let result = (|| {
-            let mut repository = DuckdbCanFrameRepository::open_read_only(path)?;
-            repository.select_vehicle(vehicle_id);
+            let repository = shared_log
+                .ok_or_else(|| anyhow::anyhow!("ログDB接続が利用できません"))?
+                .for_vehicle(vehicle_id);
             let diagnostics = repository.diagnostic_dashboard(20)?;
             let now = Utc::now();
             let health = HealthService::new(repository).dashboard(
