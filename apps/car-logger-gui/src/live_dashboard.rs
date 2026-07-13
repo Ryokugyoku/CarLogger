@@ -8,10 +8,9 @@ use std::thread;
 use std::time::Duration;
 
 use car_logger_application::{
-    DiagnosticDashboardData, DiagnosticRepository, HealthDashboardData, HealthService, ScoreDomain,
-    ScoreGranularity, ScoreStatus,
+    DiagnosticDashboardData, DiagnosticRepository, HealthDashboardData, HealthService,
+    RealtimeSignalState, RealtimeState, ScoreDomain, ScoreGranularity, ScoreStatus,
 };
-use car_logger_domain::{RealtimeSignalState, RealtimeState};
 use car_logger_storage::DuckdbCanFrameRepository;
 use chrono::{Local, TimeDelta, Utc};
 use crossbeam_channel::unbounded;
@@ -667,7 +666,7 @@ fn update_unknown_can_table(table: &Grid, snapshot: &[RealtimeSignalState]) {
             1,
         );
         table.attach(
-            &table_label(&format_payload(&state.raw_payload), gtk::Align::Start),
+            &table_label(&format_payload(&state.latest_frame.data), gtk::Align::Start),
             1,
             row,
             1,

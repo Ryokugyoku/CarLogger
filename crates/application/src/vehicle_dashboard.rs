@@ -194,22 +194,24 @@ pub struct Aggregate {
     pub quality: DataQuality,
 }
 pub fn aggregate(rows: &[AggregateInput]) -> Aggregate {
-    let fuel_cost_yen = rows.iter().map(|r| r.fuel_cost_yen).sum();
-    let refuel_litres = rows.iter().map(|r| r.refuel_litres).sum();
-    let distances: Vec<_> = rows.iter().filter_map(|r| r.distance_km).collect();
-    let consumed: Vec<_> = rows.iter().filter_map(|r| r.consumed_litres).collect();
-    let distance_km = (!distances.is_empty()).then(|| distances.iter().sum());
-    let consumed_litres = (!consumed.is_empty()).then(|| consumed.iter().sum::<f64>());
-    let quality = if rows.is_empty() {
-        DataQuality::Missing
-    } else if rows
-        .iter()
-        .any(|r| r.quality == DataQuality::Estimated || r.quality == DataQuality::Mixed)
-    {
-        DataQuality::Mixed
-    } else {
-        DataQuality::Measured
-    };
+    let mut fuel_cost_yen = 0.0;
+    let mut refuel_litres = 0.0;
+    let mut distance_km = None;
+    let mut consumed_litres = None;
+    let mut quality = (!rows.is_empty()).then_some(DataQuality::Measured);
+    for row in rows {
+        fuel_cost_yen += row.fuel_cost_yen;
+        refuel_litres += row.refuel_litres;
+        if let Some(distance) = row.distance_km {
+            *distance_km.get_or_insert(0.0) += distance;
+        }
+        if let Some(consumed) = row.consumed_litres {
+            *consumed_litres.get_or_insert(0.0) += consumed;
+        }
+        if matches!(row.quality, DataQuality::Estimated | DataQuality::Mixed) {
+            quality = Some(DataQuality::Mixed);
+        }
+    }
     Aggregate {
         fuel_cost_yen,
         refuel_litres,
@@ -219,7 +221,7 @@ pub fn aggregate(rows: &[AggregateInput]) -> Aggregate {
             .and_then(|(d, l)| (l > 0.0).then_some(d / l)),
         weighted_unit_price: (refuel_litres > 0.0).then_some(fuel_cost_yen / refuel_litres),
         cost_per_km: distance_km.and_then(|d| (d > 0.0).then_some(fuel_cost_yen / d)),
-        quality,
+        quality: quality.unwrap_or(DataQuality::Missing),
     }
 }
 

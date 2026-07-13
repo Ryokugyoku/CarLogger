@@ -6,7 +6,7 @@ use car_logger_health::ai_features::{FeatureWindow, Normalization};
 use chrono::{DateTime, Duration, Utc};
 use duckdb::params;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const MIN_TRAINING_SESSIONS: usize = 10;
 pub const MIN_TRAINING_SECONDS: f64 = 3.0 * 60.0 * 60.0;
@@ -117,21 +117,14 @@ pub fn evaluate_training_readiness(
     if seconds < MIN_TRAINING_SECONDS {
         waiting.push("less_than_3_hours".into());
     }
-    let states: BTreeSet<_> = accepted
-        .iter()
-        .map(|candidate| candidate.driving_state.as_str())
-        .collect();
-    let most_common = accepted
-        .iter()
-        .map(|candidate| {
-            accepted
-                .iter()
-                .filter(|other| other.driving_state == candidate.driving_state)
-                .count()
-        })
-        .max()
-        .unwrap_or(0);
-    if states.len() < 2
+    let mut state_counts = HashMap::new();
+    for candidate in &accepted {
+        *state_counts
+            .entry(candidate.driving_state.as_str())
+            .or_insert(0_usize) += 1;
+    }
+    let most_common = state_counts.values().copied().max().unwrap_or(0);
+    if state_counts.len() < 2
         || (!accepted.is_empty() && most_common as f64 / accepted.len() as f64 > 0.9)
     {
         waiting.push("driving_state_extremely_skewed".into());

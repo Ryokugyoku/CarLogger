@@ -581,7 +581,8 @@ fn build_obd_poll_plan(pids: &[u8]) -> Vec<Vec<u8>> {
 fn build_single_pid_fallback_plan(pids: &[u8]) -> Vec<Vec<u8>> {
     build_obd_poll_plan(pids)
         .into_iter()
-        .flat_map(|batch| batch.into_iter().map(|pid| vec![pid]).collect::<Vec<_>>())
+        .flatten()
+        .map(|pid| vec![pid])
         .collect()
 }
 
@@ -805,7 +806,6 @@ fn parse_supported_pid_bits(base_pid: u8, data: &[u8]) -> BTreeSet<u8> {
     for (byte_index, byte) in bytes.iter().enumerate() {
         for bit_index in 0..8 {
             if byte & (0x80 >> bit_index) != 0 {
-                supported.insert(base_pid + (byte_index as u8 * 8) + bit_index + 1);
                 let pid = u16::from(base_pid) + (byte_index as u16 * 8) + bit_index as u16 + 1;
                 if let Ok(pid) = u8::try_from(pid) {
                     supported.insert(pid);
@@ -1050,6 +1050,13 @@ mod tests {
         assert!(supported.contains(&0x0D));
         assert!(supported.contains(&0x20));
         assert!(!supported.contains(&0x11));
+    }
+
+    #[test]
+    fn supported_pid_bitmap_ignores_values_above_u8_range() {
+        let supported = parse_supported_pid_bits(0xE0, &[0, 0, 0, 1]);
+
+        assert!(supported.is_empty());
     }
 
     #[test]

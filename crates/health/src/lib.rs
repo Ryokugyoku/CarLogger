@@ -289,21 +289,20 @@ pub fn clamp_score(value: f64) -> f64 {
     }
 }
 pub fn combine_components(components: Vec<ComponentScore>) -> HealthScore {
-    let weighted: Vec<_> = components
+    let (weighted_score, total_weight) = components
         .iter()
-        .filter_map(|c| {
-            c.score.map(|s| {
-                (
-                    clamp_score(s),
-                    c.confidence.clamp(0.0, 100.0) * c.coverage.clamp(0.0, 1.0),
-                )
-            })
+        .filter_map(|component| {
+            let weight =
+                component.confidence.clamp(0.0, 100.0) * component.coverage.clamp(0.0, 1.0);
+            component
+                .score
+                .filter(|_| weight > 0.0)
+                .map(|score| (clamp_score(score) * weight, weight))
         })
-        .filter(|(_, w)| *w > 0.0)
-        .collect();
-    let total: f64 = weighted.iter().map(|(_, w)| w).sum();
-    let score = (total > 0.0)
-        .then(|| clamp_score(weighted.iter().map(|(s, w)| s * w).sum::<f64>() / total));
+        .fold((0.0, 0.0), |(score_sum, weight_sum), (score, weight)| {
+            (score_sum + score, weight_sum + weight)
+        });
+    let score = (total_weight > 0.0).then(|| clamp_score(weighted_score / total_weight));
     let confidence = if components.is_empty() {
         0.0
     } else {
@@ -327,8 +326,6 @@ pub struct Feature {
     pub duration_seconds: f64,
 }
 pub fn features(samples: &[SignalSample]) -> Vec<Feature> {
-    let latest: HashMap<SignalKey, f64> = HashMap::new();
-    let _ = latest;
     let mut groups: BTreeMap<(SignalKey, DrivingState), Vec<&SignalSample>> = BTreeMap::new();
     let mut current = HashMap::new();
     for s in samples {
@@ -408,7 +405,7 @@ pub struct WeightedScore {
     pub confidence: f64,
 }
 pub fn aggregate_weighted(values: &[WeightedScore]) -> Option<f64> {
-    let pairs: Vec<_> = values
+    let (weighted_score, total_weight) = values
         .iter()
         .filter(|v| v.score.is_finite())
         .map(|v| {
@@ -422,9 +419,10 @@ pub fn aggregate_weighted(values: &[WeightedScore]) -> Option<f64> {
             )
         })
         .filter(|(_, w)| *w > 0.0)
-        .collect();
-    let w: f64 = pairs.iter().map(|x| x.1).sum();
-    (w > 0.0).then(|| clamp_score(pairs.iter().map(|x| x.0 * x.1).sum::<f64>() / w))
+        .fold((0.0, 0.0), |(score_sum, weight_sum), (score, weight)| {
+            (score_sum + score * weight, weight_sum + weight)
+        });
+    (total_weight > 0.0).then(|| clamp_score(weighted_score / total_weight))
 }
 
 #[cfg(test)]

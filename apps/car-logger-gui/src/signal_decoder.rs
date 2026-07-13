@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use car_logger_domain::{
-    CanFrame, DecodedSignalValue, RealtimeSignalState, SignalDefinition, SignalKind,
-};
+use car_logger_application::RealtimeSignalState;
+use car_logger_domain::{CanFrame, DecodedSignalValue, SignalDefinition, SignalKind};
 use chrono::Utc;
 
 pub type SignalDefinitionMap = HashMap<(SignalKind, u32), SignalDefinition>;

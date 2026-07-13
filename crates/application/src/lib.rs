@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 pub mod connection;
 pub mod pid_formula;
 pub mod pid_scan;
+pub mod realtime;
 pub mod vehicle_dashboard;
+
+pub use realtime::{RealtimeSignalState, RealtimeState};
 
 pub use car_logger_health::{ScoreDomain, ScoreReason};
 

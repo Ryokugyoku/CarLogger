@@ -6,9 +6,10 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use car_logger_application::RealtimeState;
 use car_logger_application::pid_scan::{PidScanConfig, PidScanProgress};
 use car_logger_application::{CanFrameSource, DiagnosticRepository};
-use car_logger_domain::{CanFrame, RealtimeState, SignalKind};
+use car_logger_domain::{CanFrame, SignalKind};
 use car_logger_storage::{DuckdbCanFrameRepository, SqliteMasterRepository};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 

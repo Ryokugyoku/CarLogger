@@ -21,11 +21,12 @@ use crate::ui::log_charts::LogChartsView;
 use crate::ui::settings::SettingsView;
 use crate::ui::sidebar::Sidebar;
 use car_logger_application::CanFrameSource;
+use car_logger_application::RealtimeState;
 use car_logger_application::connection::{
     ConnectionTarget, IdentificationOutcome, identify_vehicle,
 };
 use car_logger_application::pid_scan::PidScanConfig;
-use car_logger_domain::{FuelType, RealtimeState, SignalKind};
+use car_logger_domain::{FuelType, SignalKind};
 use car_logger_storage::{NewVehicle, StorageRepository};
 #[cfg(target_os = "linux")]
 use car_logger_transport::SocketCanSource;

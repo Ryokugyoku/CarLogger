@@ -3,6 +3,7 @@ name = "car-logger-application"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
@@ -10,6 +11,7 @@ thiserror.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 serde.workspace = true
+dashmap.workspace = true
 
 car-logger-domain = { path = "../domain" }
 car-logger-health = { path = "../health" }

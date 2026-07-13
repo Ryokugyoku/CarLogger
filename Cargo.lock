@@ -437,6 +437,7 @@ dependencies = [
  "car-logger-domain",
  "car-logger-health",
  "chrono",
+ "dashmap",
  "serde",
  "thiserror",
  "tracing",
@@ -447,7 +448,6 @@ name = "car-logger-domain"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "dashmap",
  "serde",
  "thiserror",
  "uuid",
