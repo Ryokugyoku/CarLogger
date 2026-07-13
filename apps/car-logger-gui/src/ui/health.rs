@@ -150,8 +150,18 @@ impl HealthView {
         database_path: PathBuf,
         read_only: bool,
         parent: &gtk::ApplicationWindow,
+        vehicles: Vec<car_logger_domain::Vehicle>,
     ) -> Self {
         let widgets = Rc::new(build_widgets(&translation_manager));
+        let vehicle_id = Rc::new(Cell::new(
+            vehicles.first().map(|vehicle| vehicle.id).unwrap_or(0),
+        ));
+        let vehicle_selector = gtk::ComboBoxText::new();
+        for vehicle in &vehicles {
+            vehicle_selector.append(Some(&vehicle.id.to_string()), &vehicle.display_name);
+        }
+        vehicle_selector.set_active((!vehicles.is_empty()).then_some(0));
+        widgets.page.prepend(&vehicle_selector);
         let ai_panel = AiConditionPanel::new(database_path.clone(), read_only, parent);
         widgets.page.append(ai_panel.widget());
         let selection = Rc::new(RefCell::new(Selection::default()));
@@ -172,12 +182,14 @@ impl HealthView {
             selection.clone(),
             database_path.clone(),
             sender.clone(),
+            vehicle_id.clone(),
         );
         setup_navigation(
             &widgets,
             selection.clone(),
             database_path.clone(),
             sender.clone(),
+            vehicle_id.clone(),
         );
         let initial_sender = sender.clone();
         setup_recalculation(
@@ -187,6 +199,7 @@ impl HealthView {
             parent,
             sender,
             recalculating.clone(),
+            vehicle_id.clone(),
         );
         poll_worker(
             receiver,
@@ -197,6 +210,7 @@ impl HealthView {
             alive,
             database_path.clone(),
             initial_sender.clone(),
+            vehicle_id.clone(),
         );
 
         if read_only {
@@ -206,7 +220,34 @@ impl HealthView {
             )));
             widgets.recalculate_result.set_text(&translate("Read-only"));
         }
-        request_load(&database_path, &selection.borrow(), initial_sender);
+        request_load(
+            &database_path,
+            &selection.borrow(),
+            initial_sender.clone(),
+            vehicle_id.get(),
+        );
+        vehicle_selector.connect_changed(glib::clone!(
+            #[strong]
+            vehicle_id,
+            #[strong]
+            selection,
+            #[strong]
+            initial_sender,
+            #[strong]
+            database_path,
+            move |selector| {
+                if let Some(id) = selector.active_id().and_then(|value| value.parse().ok()) {
+                    vehicle_id.set(id);
+                    selection.borrow_mut().generation += 1;
+                    request_load(
+                        &database_path,
+                        &selection.borrow(),
+                        initial_sender.clone(),
+                        id,
+                    );
+                }
+            }
+        ));
 
         Self { widgets }
     }
@@ -435,6 +476,7 @@ fn setup_granularity_buttons(
     selection: Rc<RefCell<Selection>>,
     path: PathBuf,
     sender: Sender<WorkerEvent>,
+    vehicle_id: Rc<Cell<i64>>,
 ) {
     for (id, granularity) in [
         ("hour", ScoreGranularity::Hour),
@@ -451,10 +493,12 @@ fn setup_granularity_buttons(
                 path,
                 #[strong]
                 sender,
+                #[strong]
+                vehicle_id,
                 move |button| {
                     if button.is_active() {
                         selection.borrow_mut().select(granularity);
-                        request_load(&path, &selection.borrow(), sender.clone());
+                        request_load(&path, &selection.borrow(), sender.clone(), vehicle_id.get());
                     }
                 }
             ));
@@ -481,6 +525,7 @@ fn setup_navigation(
     selection: Rc<RefCell<Selection>>,
     path: PathBuf,
     sender: Sender<WorkerEvent>,
+    vehicle_id: Rc<Cell<i64>>,
 ) {
     for (name, direction) in [("health_previous", -1), ("health_next", 1)] {
         if let Some(button) = find_widget::<Button>(widgets.root.upcast_ref(), name) {
@@ -491,23 +536,26 @@ fn setup_navigation(
                 path,
                 #[strong]
                 sender,
+                #[strong]
+                vehicle_id,
                 move |_| {
                     selection.borrow_mut().move_window(direction);
-                    request_load(&path, &selection.borrow(), sender.clone());
+                    request_load(&path, &selection.borrow(), sender.clone(), vehicle_id.get());
                 }
             ));
         }
     }
 }
 
-fn request_load(path: &Path, selection: &Selection, sender: Sender<WorkerEvent>) {
+fn request_load(path: &Path, selection: &Selection, sender: Sender<WorkerEvent>, vehicle_id: i64) {
     let path = path.to_path_buf();
     let generation = selection.generation;
     let granularity = selection.granularity;
     let (start, end) = selection.range();
     thread::spawn(move || {
         let result = (|| {
-            let repository = DuckdbCanFrameRepository::open_read_only(path)?;
+            let mut repository = DuckdbCanFrameRepository::open_read_only(path)?;
+            repository.select_vehicle(vehicle_id);
             let diagnostics = repository.diagnostic_dashboard(100)?;
             let health = HealthService::new(repository).dashboard(
                 granularity,
@@ -532,6 +580,7 @@ fn setup_recalculation(
     parent: &gtk::ApplicationWindow,
     sender: Sender<WorkerEvent>,
     running: Rc<Cell<bool>>,
+    vehicle_id: Rc<Cell<i64>>,
 ) {
     widgets.recalculate.connect_clicked(glib::clone!(#[weak] parent, #[strong] running, #[strong] widgets, move |_| {
         if read_only || running.get() { return; }
@@ -544,6 +593,7 @@ fn setup_recalculation(
         let sender = sender.clone();
         let running = running.clone();
         let widgets = widgets.clone();
+        let vehicle_id = vehicle_id.clone();
         dialog.connect_response(move |dialog, response| {
             dialog.close();
             if response != gtk::ResponseType::Ok || running.replace(true) { return; }
@@ -551,9 +601,10 @@ fn setup_recalculation(
             widgets.recalculate_result.set_text(&translate("Recalculation in progress"));
             let path = path.clone();
             let sender = sender.clone();
+            let selected_vehicle_id = vehicle_id.get();
             thread::spawn(move || {
                 let result = DuckdbCanFrameRepository::open(path)
-                    .map(HealthService::new)
+                    .map(|mut repository| { repository.select_vehicle(selected_vehicle_id); HealthService::new(repository) })
                     .and_then(|mut service| service.recalculate_all(RECALCULATE_CHUNK_SIZE))
                     .map(|_| ()).map_err(|error| error.to_string());
                 let _ = sender.send(WorkerEvent::Recalculated(result));
@@ -573,6 +624,7 @@ fn poll_worker(
     alive: Rc<Cell<bool>>,
     path: PathBuf,
     sender: Sender<WorkerEvent>,
+    vehicle_id: Rc<Cell<i64>>,
 ) {
     glib::timeout_add_local(Duration::from_millis(120), move || {
         if !alive.get() {
@@ -605,7 +657,12 @@ fn poll_worker(
                                 .recalculate_result
                                 .set_text(&translate("Recalculation completed"));
                             selection.borrow_mut().generation += 1;
-                            request_load(&path, &selection.borrow(), sender.clone());
+                            request_load(
+                                &path,
+                                &selection.borrow(),
+                                sender.clone(),
+                                vehicle_id.get(),
+                            );
                         }
                         Err(error) => {
                             widgets

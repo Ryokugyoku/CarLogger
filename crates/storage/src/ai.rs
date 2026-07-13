@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn training_job_is_singleton_and_model_switch_is_atomic() {
-        let repository = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         assert!(repository.try_start_training_job("one", "g1").unwrap());
         assert!(!repository.try_start_training_job("two", "g2").unwrap());
         repository
@@ -617,8 +617,8 @@ mod tests {
     }
     #[test]
     fn migration_is_idempotent_and_preserves_logs() {
-        let r = DuckdbCanFrameRepository::open_in_memory().unwrap();
-        r.connection().execute("INSERT INTO can_frames(signal_type,can_id,is_extended,is_remote,data,received_at) VALUES('PID',1,false,false,?1,'2024-01-01T00:00:00Z')",duckdb::params![vec![1u8]]).unwrap();
+        let r = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
+        r.connection().execute("INSERT INTO can_frames(vehicle_id,connection_session_id,signal_type,can_id,is_extended,is_remote,data,received_at) VALUES(1,1,'PID',1,false,false,?1,'2024-01-01T00:00:00Z')",duckdb::params![vec![1u8]]).unwrap();
         r.initialize().unwrap();
         r.initialize().unwrap();
         let n: i64 = r

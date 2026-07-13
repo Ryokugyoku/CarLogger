@@ -351,6 +351,8 @@ fn unknown_row(
     unknown_id_header: &Label,
     kind: SignalKind,
 ) -> Grid {
+    let observation_id = observation.id;
+    let test_payload = observation.raw_payload.clone();
     let row = manager_row_grid();
     row.attach(
         &mono_label(&format_signal_id(kind, observation.id)),
@@ -374,10 +376,19 @@ fn unknown_row(
     let formula_entry = manager_entry("", 260);
     formula_entry.set_placeholder_text(Some(&translate("Formula")));
     let save_button = row_button(&translate("Promote"));
+    let test_button = row_button("式テスト");
     editor_box.append(&name_entry);
     editor_box.append(&formula_entry);
+    editor_box.append(&test_button);
     editor_box.append(&save_button);
     row.attach(&editor_box, 3, 0, 1, 1);
+    test_button.connect_clicked(glib::clone!(
+        #[strong]
+        formula_entry,
+        move |_| {
+            show_formula_test_dialog(&formula_entry.text(), &test_payload);
+        }
+    ));
 
     save_button.connect_clicked(glib::clone!(
         #[strong]
@@ -401,7 +412,7 @@ fn unknown_row(
         move |_| {
             let definition = SignalDefinition {
                 kind,
-                id: observation.id,
+                id: observation_id,
                 name: name_entry.text().to_string(),
                 unit: None,
                 formula: formula_entry.text().to_string(),
@@ -423,6 +434,57 @@ fn unknown_row(
     ));
 
     row
+}
+
+fn show_formula_test_dialog(formula: &str, sample: &[u8]) {
+    let dialog = gtk::Dialog::builder()
+        .title("PID変換式テスト")
+        .modal(true)
+        .default_width(420)
+        .build();
+    dialog.add_button("閉じる", gtk::ResponseType::Close);
+    let box_ = GtkBox::new(gtk::Orientation::Vertical, 8);
+    box_.set_margin_top(12);
+    box_.set_margin_bottom(12);
+    box_.set_margin_start(12);
+    box_.set_margin_end(12);
+    let formula_entry = Entry::new();
+    formula_entry.set_text(formula);
+    box_.append(&formula_entry);
+    let sample_entry = Entry::new();
+    sample_entry.set_text(&format_payload(sample));
+    sample_entry.set_placeholder_text(Some("例: 1A F8"));
+    box_.append(&sample_entry);
+    let result = Label::new(None);
+    result.set_halign(gtk::Align::Start);
+    box_.append(&result);
+    let run = Button::with_label("試算");
+    box_.append(&run);
+    run.connect_clicked(glib::clone!(
+        #[strong]
+        formula_entry,
+        #[strong]
+        sample_entry,
+        #[strong]
+        result,
+        move |_| {
+            let bytes = sample_entry
+                .text()
+                .split_whitespace()
+                .map(|value| u8::from_str_radix(value, 16))
+                .collect::<Result<Vec<_>, _>>();
+            match bytes.map_err(|error| error.to_string()).and_then(|bytes| {
+                car_logger_application::pid_formula::evaluate(&formula_entry.text(), &bytes)
+                    .map_err(|error| error.to_string())
+            }) {
+                Ok(value) => result.set_text(&format!("結果: {value}")),
+                Err(error) => result.set_text(&format!("エラー: {error}")),
+            }
+        }
+    ));
+    dialog.content_area().append(&box_);
+    dialog.connect_response(|dialog, _| dialog.close());
+    dialog.present();
 }
 
 fn clear_box(container: &GtkBox) {

@@ -1,15 +1,17 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::NewVehicle;
 use anyhow::Result;
 use car_logger_application::CanFrameRepository;
+use car_logger_application::connection::ConnectionTarget;
 use car_logger_domain::{CanFrame, CanIdObservation, SignalDefinition, SignalKind};
+use car_logger_domain::{Vehicle, VehicleId};
 use chrono::{DateTime, Utc};
 
 use crate::duckdb::DuckdbCanFrameRepository;
 use crate::retention::{LogCompactionReport, LogRetentionPolicy};
 use crate::sqlite::SqliteMasterRepository;
-pub use crate::sqlite::VehicleProfile;
 
 pub struct StorageRepository {
     master: SqliteMasterRepository,
@@ -41,6 +43,20 @@ impl StorageRepository {
             }
         };
         let log_read_only = log.is_read_only();
+        if !log_read_only {
+            let now = Utc::now();
+            let due = master
+                .vehicles(true)?
+                .into_iter()
+                .filter(|vehicle| vehicle.purge_after.is_some_and(|at| at <= now))
+                .collect::<Vec<_>>();
+            for vehicle in &due {
+                log.purge_vehicle(vehicle.id)?;
+            }
+            if !due.is_empty() {
+                master.purge_due_vehicles(now)?;
+            }
+        }
 
         Ok(Self {
             master,
@@ -80,12 +96,66 @@ impl StorageRepository {
         self.master.set_setting(key, value)
     }
 
-    pub fn vehicle_profile(&self) -> Result<Option<VehicleProfile>> {
-        self.master.vehicle_profile()
+    pub fn create_vehicle(&self, input: &NewVehicle, now: DateTime<Utc>) -> Result<VehicleId> {
+        self.master.create_vehicle(input, now)
     }
 
-    pub fn save_vehicle_profile(&self, profile: &VehicleProfile) -> Result<()> {
-        self.master.save_vehicle_profile(profile)
+    pub fn vehicles(&self, include_deleted: bool) -> Result<Vec<Vehicle>> {
+        self.master.vehicles(include_deleted)
+    }
+
+    pub fn vehicle_by_vin(&self, vin: &str) -> Result<Option<Vehicle>> {
+        self.master.vehicle_by_vin(vin)
+    }
+
+    pub fn soft_delete_vehicle(&self, vehicle_id: VehicleId, now: DateTime<Utc>) -> Result<()> {
+        self.master.soft_delete_vehicle(vehicle_id, now)
+    }
+
+    pub fn restore_vehicle(&self, vehicle_id: VehicleId, now: DateTime<Utc>) -> Result<()> {
+        self.master.restore_vehicle(vehicle_id, now)
+    }
+
+    pub fn permanently_delete_vehicle(
+        &self,
+        vehicle_id: VehicleId,
+        confirmation: &str,
+    ) -> Result<()> {
+        self.log.purge_vehicle(vehicle_id)?;
+        self.master
+            .permanently_delete_vehicle(vehicle_id, confirmation)
+    }
+
+    pub fn last_connection_target(&self) -> Result<Option<ConnectionTarget>> {
+        self.master.last_connection_target()
+    }
+
+    pub fn start_connection_session(
+        &self,
+        target: &ConnectionTarget,
+        now: DateTime<Utc>,
+    ) -> Result<i64> {
+        let target_id = self.master.save_last_connection_target(target, now)?;
+        self.master.start_connection_session(target_id, now)
+    }
+
+    pub fn identify_connection_session(
+        &self,
+        session_id: i64,
+        vehicle_id: VehicleId,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.master
+            .identify_connection_session(session_id, vehicle_id, now)
+    }
+
+    pub fn end_connection_session(
+        &self,
+        session_id: i64,
+        now: DateTime<Utc>,
+        reason: &str,
+    ) -> Result<()> {
+        self.master.end_connection_session(session_id, now, reason)
     }
 
     pub fn upsert_signal_definition(&self, definition: &SignalDefinition) -> Result<()> {
@@ -123,6 +193,25 @@ impl StorageRepository {
             .collect();
 
         Ok(observations)
+    }
+
+    pub fn list_unknown_observations_for_vehicle(
+        &self,
+        vehicle_id: VehicleId,
+        kind: SignalKind,
+    ) -> Result<Vec<CanIdObservation>> {
+        let known_ids = self
+            .master
+            .list_signal_definitions_by_kind(kind)?
+            .into_iter()
+            .map(|definition| definition.id)
+            .collect::<HashSet<_>>();
+        Ok(self
+            .log
+            .list_observations_for_vehicle(vehicle_id, kind)?
+            .into_iter()
+            .filter(|row| !known_ids.contains(&row.id))
+            .collect())
     }
 
     pub fn list_unknown_can_id_observations(&self) -> Result<Vec<CanIdObservation>> {
@@ -164,13 +253,16 @@ fn default_log_database_path(master_database_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NewVehicle;
     use crate::duckdb::DuckdbCanFrameRepository;
+    use car_logger_domain::FuelType;
     use car_logger_domain::SignalKind;
     use tempfile::tempdir;
 
     #[test]
     fn unknown_can_id_becomes_known_after_definition_is_saved() {
         let mut repo = StorageRepository::open_in_memory().unwrap();
+        repo.log.set_capture_context(1, 1);
         repo.save(&CanFrame::new(0x123, false, false, vec![0x10, 0x20]))
             .unwrap();
 
@@ -205,6 +297,7 @@ mod tests {
         let log_path = dir.path().join("log.duckdb");
         {
             let mut log = DuckdbCanFrameRepository::open(&log_path).unwrap();
+            log.set_capture_context(1, 1);
             log.save_with_kind(
                 SignalKind::Pid,
                 &CanFrame::new(0x0C, false, false, vec![0x1A, 0xF8]),
@@ -217,5 +310,53 @@ mod tests {
 
         assert!(repo.is_log_read_only());
         assert_eq!(repo.list_recent_log_frames(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn permanent_vehicle_delete_removes_only_that_vehicles_master_and_raw_data() {
+        let mut repo = StorageRepository::open_in_memory().unwrap();
+        let input = |name: &str| NewVehicle {
+            display_name: name.into(),
+            vin: None,
+            fuel_type: FuelType::Gasoline,
+            displacement_l: 2.0,
+            tank_capacity_l: 50.0,
+            manufacturer: None,
+            model: None,
+            model_year: None,
+            engine: None,
+            odometer_km: None,
+            notes: None,
+        };
+        let first = repo.create_vehicle(&input("First"), Utc::now()).unwrap();
+        let second = repo.create_vehicle(&input("Second"), Utc::now()).unwrap();
+        repo.log.set_capture_context(first, 1);
+        repo.save(&CanFrame::new(0x101, false, false, vec![1]))
+            .unwrap();
+        repo.log.set_capture_context(second, 2);
+        repo.save(&CanFrame::new(0x202, false, false, vec![2]))
+            .unwrap();
+        repo.permanently_delete_vehicle(first, "First").unwrap();
+        assert_eq!(
+            repo.vehicles(true)
+                .unwrap()
+                .iter()
+                .map(|v| v.id)
+                .collect::<Vec<_>>(),
+            vec![second]
+        );
+        assert!(
+            repo.log
+                .list_recent_frames_for_vehicle(first, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            repo.log
+                .list_recent_frames_for_vehicle(second, 10)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

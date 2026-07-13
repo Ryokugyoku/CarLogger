@@ -3,6 +3,52 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 
 pub type CanId = u32;
+pub type VehicleId = i64;
+pub type ConnectionSessionId = i64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FuelType {
+    Gasoline,
+    Diesel,
+    Hybrid,
+    PlugInHybrid,
+    Electric,
+    Lpg,
+    Other,
+}
+
+impl FuelType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Gasoline => "gasoline",
+            Self::Diesel => "diesel",
+            Self::Hybrid => "hybrid",
+            Self::PlugInHybrid => "plug_in_hybrid",
+            Self::Electric => "electric",
+            Self::Lpg => "lpg",
+            Self::Other => "other",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Vehicle {
+    pub id: VehicleId,
+    pub display_name: String,
+    pub normalized_vin: Option<String>,
+    pub fuel_type: FuelType,
+    pub displacement_l: f64,
+    pub tank_capacity_l: f64,
+    pub manufacturer: Option<String>,
+    pub model: Option<String>,
+    pub model_year: Option<u16>,
+    pub engine: Option<String>,
+    pub odometer_km: Option<f64>,
+    pub notes: Option<String>,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub purge_after: Option<DateTime<Utc>>,
+}
 
 /// 通信方式に依存しない共通CANフレーム。
 ///

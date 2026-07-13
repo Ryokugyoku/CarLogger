@@ -3,6 +3,9 @@ use car_logger_domain::CanFrame;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+pub mod connection;
+pub mod pid_formula;
+pub mod pid_scan;
 pub mod vehicle_dashboard;
 
 pub use car_logger_health::{ScoreDomain, ScoreReason};
@@ -20,6 +23,10 @@ pub trait CanFrameSource: Send {
     /// cannot identify a vehicle return `None`; callers must not infer a match.
     fn vehicle_vin(&mut self) -> Result<Option<String>> {
         Ok(None)
+    }
+
+    fn probe_pid(&mut self, _service: u8, _pid: u8, _timeout: std::time::Duration) -> Result<bool> {
+        anyhow::bail!("この接続方式はPID探索に対応していません")
     }
 
     /// Returns a completed low-priority diagnostic observation, when available.

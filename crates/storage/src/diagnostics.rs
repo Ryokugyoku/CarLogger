@@ -39,12 +39,13 @@ fn map_dtc(row: &duckdb::Row<'_>) -> duckdb::Result<StoredDtc> {
 impl DiagnosticRepository for DuckdbCanFrameRepository {
     fn record_diagnostic(&mut self, observation: &DiagnosticObservation) -> Result<()> {
         ensure!(!self.is_read_only(), "read-only database");
+        let vehicle_id = self.vehicle_scope()?;
         let at = observation.observed_at.to_rfc3339();
         let session_id = observation.session_id.or_else(|| {
             self.connection()
                 .query_row(
-                    "SELECT id FROM driving_sessions WHERE started_at<=?1 AND ended_at>=?1 ORDER BY id DESC LIMIT 1",
-                    params![at],
+                    "SELECT id FROM driving_sessions WHERE vehicle_id=?1 AND started_at<=?2 AND ended_at>=?2 ORDER BY id DESC LIMIT 1",
+                    params![vehicle_id, at],
                     |row| row.get(0),
                 )
                 .ok()
@@ -53,8 +54,8 @@ impl DiagnosticRepository for DuckdbCanFrameRepository {
         let mut event_ids = Vec::new();
         for dtc in &observation.dtcs {
             let active: Option<i64> = self.connection().query_row(
-                "SELECT id FROM dtc_events WHERE code=?1 AND coalesce(ecu,'')=coalesce(?2,'') AND active=true ORDER BY id DESC LIMIT 1",
-                params![dtc.code, dtc.ecu],
+                "SELECT id FROM dtc_events WHERE vehicle_id=?1 AND code=?2 AND coalesce(ecu,'')=coalesce(?3,'') AND active=true ORDER BY id DESC LIMIT 1",
+                params![vehicle_id, dtc.code, dtc.ecu],
                 |row| row.get(0),
             ).ok();
             let id = if let Some(id) = active {
@@ -65,13 +66,13 @@ impl DiagnosticRepository for DuckdbCanFrameRepository {
                 id
             } else {
                 let occurrence: u32 = self.connection().query_row(
-                    "SELECT coalesce(max(occurrence),0)+1 FROM dtc_events WHERE code=?1 AND coalesce(ecu,'')=coalesce(?2,'')",
-                    params![dtc.code, dtc.ecu],
+                    "SELECT coalesce(max(occurrence),0)+1 FROM dtc_events WHERE vehicle_id=?1 AND code=?2 AND coalesce(ecu,'')=coalesce(?3,'')",
+                    params![vehicle_id, dtc.code, dtc.ecu],
                     |row| row.get(0),
                 )?;
                 self.connection().execute(
-                    "INSERT INTO dtc_events(code,ecu,first_detected_at,last_detected_at,active,cleared_at,occurrence,source_service,session_id) VALUES(?1,?2,?3,?3,true,NULL,?4,?5,?6)",
-                    params![dtc.code, dtc.ecu, at, occurrence, observation.source_service, session_id],
+                    "INSERT INTO dtc_events(vehicle_id,code,ecu,first_detected_at,last_detected_at,active,cleared_at,occurrence,source_service,session_id) VALUES(?1,?2,?3,?4,?4,true,NULL,?5,?6,?7)",
+                    params![vehicle_id, dtc.code, dtc.ecu, at, occurrence, observation.source_service, session_id],
                 )?;
                 self.connection()
                     .query_row("SELECT currval('dtc_events_sequence')", [], |row| {
@@ -83,8 +84,8 @@ impl DiagnosticRepository for DuckdbCanFrameRepository {
         if complete {
             if event_ids.is_empty() {
                 self.connection().execute(
-                    "UPDATE dtc_events SET active=false, cleared_at=?1 WHERE active=true",
-                    params![at],
+                    "UPDATE dtc_events SET active=false, cleared_at=?1 WHERE vehicle_id=?2 AND active=true",
+                    params![at, vehicle_id],
                 )?;
             } else {
                 let ids = event_ids
@@ -93,14 +94,14 @@ impl DiagnosticRepository for DuckdbCanFrameRepository {
                     .collect::<Vec<_>>()
                     .join(",");
                 self.connection().execute_batch(&format!(
-                    "UPDATE dtc_events SET active=false, cleared_at='{}' WHERE active=true AND id NOT IN ({ids})",
-                    at.replace('\'', "''")
+                    "UPDATE dtc_events SET active=false, cleared_at='{}' WHERE vehicle_id={} AND active=true AND id NOT IN ({ids})",
+                    at.replace('\'', "''"), vehicle_id
                 ))?;
             }
         }
         self.connection().execute(
-            "INSERT INTO dtc_observations(observed_at,mil_on,reported_count,quality,error,source_service,session_id,event_ids_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![at, observation.mil_on, observation.reported_dtc_count.map(u32::from), observation.quality.as_str(), observation.error, observation.source_service, session_id, serde_json::to_string(&event_ids)?],
+            "INSERT INTO dtc_observations(vehicle_id,observed_at,mil_on,reported_count,quality,error,source_service,session_id,event_ids_json) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![vehicle_id, at, observation.mil_on, observation.reported_dtc_count.map(u32::from), observation.quality.as_str(), observation.error, observation.source_service, session_id, serde_json::to_string(&event_ids)?],
         )?;
         let supported = match observation.quality {
             DiagnosticQuality::Unsupported => Some(false),
@@ -110,8 +111,8 @@ impl DiagnosticRepository for DuckdbCanFrameRepository {
         let previous = self
             .connection()
             .query_row(
-                "SELECT supported,mil_on FROM diagnostic_state WHERE singleton=1",
-                [],
+                "SELECT supported,mil_on FROM diagnostic_state WHERE vehicle_id=?1",
+                params![vehicle_id],
                 |row| {
                     Ok((
                         row.get::<_, Option<bool>>(0)?,
@@ -121,8 +122,9 @@ impl DiagnosticRepository for DuckdbCanFrameRepository {
             )
             .unwrap_or((None, None));
         self.connection().execute(
-            "INSERT OR REPLACE INTO diagnostic_state VALUES(1,?1,?2,?3,?4)",
+            "INSERT OR REPLACE INTO diagnostic_state VALUES(?1,?2,?3,?4,?5)",
             params![
+                vehicle_id,
                 supported.or(previous.0),
                 observation.mil_on.or(previous.1),
                 at,
@@ -151,22 +153,23 @@ impl DiagnosticRepository for DuckdbCanFrameRepository {
                 last_error: None,
             });
         }
+        let vehicle_id = self.vehicle_scope()?;
         let state = self.connection().query_row(
-            "SELECT supported,mil_on,last_observed_at,last_error FROM diagnostic_state WHERE singleton=1",
-            [],
+            "SELECT supported,mil_on,last_observed_at,last_error FROM diagnostic_state WHERE vehicle_id=?1",
+            params![vehicle_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get::<_, Option<String>>(2)?, row.get(3)?)),
         ).ok();
         let load = |active_only: bool, limit: usize| -> Result<Vec<StoredDtc>> {
             let sql = if active_only {
-                "SELECT id,code,ecu,first_detected_at,last_detected_at,active,cleared_at,occurrence FROM dtc_events WHERE active=true ORDER BY last_detected_at DESC"
+                "SELECT id,code,ecu,first_detected_at,last_detected_at,active,cleared_at,occurrence FROM dtc_events WHERE vehicle_id=?1 AND active=true ORDER BY last_detected_at DESC"
             } else {
-                "SELECT id,code,ecu,first_detected_at,last_detected_at,active,cleared_at,occurrence FROM dtc_events ORDER BY last_detected_at DESC LIMIT ?1"
+                "SELECT id,code,ecu,first_detected_at,last_detected_at,active,cleared_at,occurrence FROM dtc_events WHERE vehicle_id=?1 ORDER BY last_detected_at DESC LIMIT ?2"
             };
             let mut statement = self.connection().prepare(sql)?;
             let rows = if active_only {
-                statement.query_map([], map_dtc)?
+                statement.query_map(params![vehicle_id], map_dtc)?
             } else {
-                statement.query_map(params![limit as i64], map_dtc)?
+                statement.query_map(params![vehicle_id, limit as i64], map_dtc)?
             };
             Ok(rows.collect::<duckdb::Result<Vec<_>>>()?)
         };
@@ -209,7 +212,7 @@ mod tests {
 
     #[test]
     fn duplicate_continuation_clear_and_recurrence_are_distinct() {
-        let mut repository = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         let start = Utc::now();
         repository
             .record_diagnostic(&observation(start, &["P0133"]))
@@ -240,7 +243,7 @@ mod tests {
 
     #[test]
     fn initialization_is_idempotent_and_does_not_touch_scores() {
-        let repository = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         repository.initialize().unwrap();
         repository.initialize().unwrap();
         let count: i64 = repository
@@ -264,5 +267,23 @@ mod tests {
         let data = repository.diagnostic_dashboard(10).unwrap();
         assert!(data.active.is_empty());
         assert!(data.last_observed_at.is_none());
+    }
+
+    #[test]
+    fn diagnostics_are_isolated_by_vehicle() {
+        let mut repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
+        repository
+            .record_diagnostic(&observation(Utc::now(), &["P0001"]))
+            .unwrap();
+        repository.select_vehicle(2);
+        assert!(
+            repository
+                .diagnostic_dashboard(10)
+                .unwrap()
+                .active
+                .is_empty()
+        );
+        repository.select_vehicle(1);
+        assert_eq!(repository.diagnostic_dashboard(10).unwrap().active.len(), 1);
     }
 }

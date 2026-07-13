@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn compacts_old_frames_without_losing_observation_semantics() {
-        let mut repository = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         repository.save(&frame(0x123, &[20], 100, 100)).unwrap();
         repository.save(&frame(0x123, &[10], 100, 200)).unwrap();
         repository.save(&frame(0x123, &[30], 100, 300)).unwrap();
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn bounded_runs_merge_a_split_second_bucket() {
-        let mut repository = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         for data in [1, 1, 2] {
             repository
                 .save(&frame(1, &[data], 100, data as u32))
@@ -337,7 +337,7 @@ mod tests {
 
     #[test]
     fn pid_frames_wait_for_completed_health_backfill() {
-        let mut repository = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         repository
             .save_with_kind(SignalKind::Pid, &frame(0x0c, &[0x1a, 0xf8], 100, 0))
             .unwrap();
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn policy_rejects_invalid_maintenance_bounds() {
-        let mut repository = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         let policy = LogRetentionPolicy {
             raw_retention: TimeDelta::days(14),
             max_frames_per_run: 0,

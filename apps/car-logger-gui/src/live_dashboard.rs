@@ -197,8 +197,9 @@ pub fn setup_dashboard_refresh(
     translation_manager: Rc<RefCell<TranslationManager>>,
     log_database_path: PathBuf,
     is_connected: Arc<AtomicBool>,
+    vehicle_id: i64,
 ) {
-    setup_offline_summary(builder, log_database_path);
+    setup_offline_summary(builder, log_database_path, vehicle_id);
     let mode_stack: gtk::Stack = builder
         .object("dashboard_mode_stack")
         .expect("Could not find dashboard_mode_stack");
@@ -313,7 +314,7 @@ struct OfflineData {
     diagnostics: DiagnosticDashboardData,
 }
 
-fn setup_offline_summary(builder: &gtk::Builder, path: PathBuf) {
+fn setup_offline_summary(builder: &gtk::Builder, path: PathBuf, vehicle_id: i64) {
     let score: Label = builder
         .object("offline_health_score")
         .expect("offline_health_score");
@@ -355,7 +356,8 @@ fn setup_offline_summary(builder: &gtk::Builder, path: PathBuf) {
     let (sender, receiver) = unbounded();
     thread::spawn(move || {
         let result = (|| {
-            let repository = DuckdbCanFrameRepository::open_read_only(path)?;
+            let mut repository = DuckdbCanFrameRepository::open_read_only(path)?;
+            repository.select_vehicle(vehicle_id);
             let diagnostics = repository.diagnostic_dashboard(20)?;
             let now = Utc::now();
             let health = HealthService::new(repository).dashboard(

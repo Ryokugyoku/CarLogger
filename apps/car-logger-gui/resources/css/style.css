@@ -10,6 +10,144 @@
     transition: background 3200ms ease-in-out;
 }
 
+/* Keep native controls inside the same dark palette as the application.
+ * ComboBoxText renders its visible control as a nested button and its list in
+ * a popover, so styling only the ComboBox itself leaves both surfaces white. */
+button {
+    background: linear-gradient(180deg, #252d36, #1d242c);
+    color: #edf7fa;
+    border: 1px solid #3b4a56;
+    border-radius: 8px;
+    box-shadow: none;
+    text-shadow: none;
+    -gtk-icon-shadow: none;
+}
+
+button:hover {
+    background: linear-gradient(180deg, #2c3943, #22313a);
+    color: #f7fdff;
+    border-color: #3f91a8;
+}
+
+button:active,
+button:checked {
+    background: linear-gradient(180deg, #173b47, #172f3b);
+    color: #73eaff;
+    border-color: #31b9d4;
+}
+
+button:focus {
+    outline: 2px solid rgba(81, 217, 245, 0.72);
+    outline-offset: 2px;
+}
+
+button:disabled {
+    background: #1a1f25;
+    color: #6f7d86;
+    border-color: #2a333b;
+    box-shadow: none;
+}
+
+combobox {
+    color: #edf7fa;
+}
+
+combobox button.combo {
+    min-height: 36px;
+    padding: 0 11px;
+    background: linear-gradient(180deg, #202b34, #192129);
+    color: #edf7fa;
+    border: 1px solid #365363;
+    border-radius: 8px;
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.025);
+}
+
+combobox button.combo:hover {
+    background: linear-gradient(180deg, #263842, #1c2d36);
+    border-color: #3ab3cd;
+}
+
+combobox button.combo:checked,
+combobox button.combo:active {
+    background: #142d38;
+    color: #73eaff;
+    border-color: #28e1ff;
+}
+
+combobox button.combo:disabled {
+    background: #181e24;
+    color: #66747d;
+    border-color: #29343c;
+}
+
+/* GtkPopover is used by ComboBoxText on GTK4. The menu/window selectors keep
+ * the palette consistent on backends that expose the legacy menu nodes. */
+popover.background > contents,
+popover.menu > contents,
+menu,
+.context-menu {
+    background: #151d24;
+    color: #e8f3f6;
+    border: 1px solid #345162;
+    border-radius: 10px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.46);
+    padding: 5px;
+}
+
+popover modelbutton,
+menu menuitem {
+    background: transparent;
+    color: #dce9ee;
+    border: 0;
+    border-radius: 6px;
+    padding: 8px 12px;
+}
+
+popover modelbutton:hover,
+popover modelbutton:selected,
+menu menuitem:hover,
+menu menuitem:selected {
+    background: linear-gradient(90deg, rgba(40, 225, 255, 0.18), rgba(85, 124, 255, 0.14));
+    color: #73eaff;
+}
+
+popover modelbutton:checked {
+    background: #15313d;
+    color: #73eaff;
+}
+
+dialog,
+messagedialog {
+    background: #151a20;
+    color: #eef6f8;
+}
+
+entry,
+spinbutton {
+    background: #10161c;
+    color: #f1f7f9;
+    border: 1px solid #34444f;
+    border-radius: 7px;
+}
+
+entry:focus,
+spinbutton:focus-within {
+    border-color: #32bad5;
+    box-shadow: 0 0 0 1px rgba(40, 225, 255, 0.16);
+}
+
+.destructive-action {
+    background: #3a1e25;
+    color: #ffb2b2;
+    border-color: #84434d;
+}
+
+.destructive-action:hover {
+    background: #4a252d;
+    color: #ffd0d0;
+    border-color: #b45a68;
+}
+
 .main-surface.ambient-phase-1 {
     background: radial-gradient(circle farthest-corner at 44% 8%, rgba(20, 91, 91, 0.15), transparent 40%),
                 radial-gradient(circle farthest-corner at 94% 55%, rgba(45, 55, 105, 0.14), transparent 43%),
@@ -132,6 +270,17 @@
     padding: 0 8px;
 }
 
+combobox.header-control {
+    background: transparent;
+    border: 0;
+    padding: 0;
+}
+
+combobox.header-control button.combo {
+    min-height: 38px;
+    padding: 0 10px;
+}
+
 .connect-button {
     background: #00c28e;
     color: #07110e;
@@ -154,6 +303,12 @@
     font-weight: 700;
     min-height: 36px;
     padding: 0 14px;
+}
+
+.secondary-button:hover {
+    background: #2c3741;
+    color: #f7fdff;
+    border-color: #3f91a8;
 }
 
 .ai-condition-root {
@@ -481,6 +636,12 @@ progressbar.ratio-progress progress {
     font-weight: 800;
     min-height: 34px;
     padding: 0 12px;
+}
+
+.small-action-button:hover {
+    background: #22d9a6;
+    color: #07110e;
+    border-color: transparent;
 }
 
 .caption-label {

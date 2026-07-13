@@ -6,10 +6,11 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use car_logger_application::pid_scan::{PidScanConfig, PidScanProgress};
 use car_logger_application::{CanFrameSource, DiagnosticRepository};
 use car_logger_domain::{CanFrame, RealtimeState, SignalKind};
-use car_logger_storage::DuckdbCanFrameRepository;
-use crossbeam_channel::Sender;
+use car_logger_storage::{DuckdbCanFrameRepository, SqliteMasterRepository};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 
 use crate::signal_decoder::{SignalDefinitionMap, decode_frame};
 
@@ -29,6 +30,10 @@ pub enum RealtimeLoggingEvent {
         unit: Option<String>,
     },
     ReceiveError(String),
+    ConnectionLost(String),
+    VehicleChanged,
+    ScanProgress(PidScanProgress),
+    ScanFinished(PidScanProgress),
     SaveError(String),
     Stopped,
 }
@@ -36,11 +41,35 @@ pub enum RealtimeLoggingEvent {
 pub struct RealtimeLoggingSession {
     stop_requested: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    commands: Sender<LoggingCommand>,
+}
+
+enum LoggingCommand {
+    StartScan(PidScanConfig),
+    CancelScan,
+}
+
+pub struct RealtimeLoggingConfig {
+    pub signal_kind: SignalKind,
+    pub definitions: SignalDefinitionMap,
+    pub log_database_path: PathBuf,
+    pub master_database_path: PathBuf,
+    pub vehicle_id: i64,
+    pub connection_session_id: i64,
+    pub expected_vin: Option<String>,
+    pub realtime_state: Arc<RealtimeState>,
+    pub events: Sender<RealtimeLoggingEvent>,
 }
 
 impl RealtimeLoggingSession {
     pub fn request_stop(&self) {
         self.stop_requested.store(true, Ordering::Relaxed);
+    }
+    pub fn start_pid_scan(&self, config: PidScanConfig) {
+        let _ = self.commands.send(LoggingCommand::StartScan(config));
+    }
+    pub fn cancel_pid_scan(&self) {
+        let _ = self.commands.send(LoggingCommand::CancelScan);
     }
 }
 
@@ -53,42 +82,40 @@ impl Drop for RealtimeLoggingSession {
 
 pub fn spawn_realtime_logging(
     source: Box<dyn CanFrameSource>,
-    signal_kind: SignalKind,
-    definitions: SignalDefinitionMap,
-    log_database_path: PathBuf,
-    realtime_state: Arc<RealtimeState>,
-    events: Sender<RealtimeLoggingEvent>,
+    config: RealtimeLoggingConfig,
 ) -> RealtimeLoggingSession {
     let stop_requested = Arc::new(AtomicBool::new(false));
     let thread_stop_requested = stop_requested.clone();
+    let (command_sender, command_receiver) = unbounded();
 
     let handle = thread::spawn(move || {
-        run_realtime_logging(
-            source,
-            signal_kind,
-            definitions,
-            log_database_path,
-            realtime_state,
-            events,
-            thread_stop_requested,
-        );
+        run_realtime_logging(source, config, thread_stop_requested, command_receiver);
     });
 
     RealtimeLoggingSession {
         stop_requested,
         handle: Some(handle),
+        commands: command_sender,
     }
 }
 
 fn run_realtime_logging(
     mut source: Box<dyn CanFrameSource>,
-    signal_kind: SignalKind,
-    definitions: SignalDefinitionMap,
-    log_database_path: PathBuf,
-    realtime_state: Arc<RealtimeState>,
-    events: Sender<RealtimeLoggingEvent>,
+    config: RealtimeLoggingConfig,
     stop_requested: Arc<AtomicBool>,
+    commands: Receiver<LoggingCommand>,
 ) {
+    let RealtimeLoggingConfig {
+        signal_kind,
+        definitions,
+        log_database_path,
+        master_database_path,
+        vehicle_id,
+        connection_session_id,
+        expected_vin,
+        realtime_state,
+        events,
+    } = config;
     let mut repository = match DuckdbCanFrameRepository::open(&log_database_path) {
         Ok(repository) => repository,
         Err(error) => {
@@ -99,15 +126,60 @@ fn run_realtime_logging(
             return;
         }
     };
+    repository.set_capture_context(vehicle_id, connection_session_id);
+    let master = SqliteMasterRepository::open(&master_database_path).ok();
 
     let mut buffer = Vec::with_capacity(SAVE_BATCH_SIZE);
     let mut last_flush = Instant::now();
     let mut last_receive_error = Instant::now() - RECEIVE_ERROR_INTERVAL;
     let mut total_frames = 0_u64;
+    let mut consecutive_receive_errors = 0_u16;
+    let mut last_identity_check = Instant::now();
 
     while !stop_requested.load(Ordering::Relaxed) {
+        if last_identity_check.elapsed() >= Duration::from_secs(30) {
+            if let (Some(expected), Ok(Some(observed))) =
+                (expected_vin.as_deref(), source.vehicle_vin())
+                && car_logger_application::connection::normalize_vin(&observed)
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    != Some(expected)
+            {
+                let _ = events.send(RealtimeLoggingEvent::VehicleChanged);
+                break;
+            }
+            last_identity_check = Instant::now();
+        }
+        if let Ok(LoggingCommand::StartScan(config)) = commands.try_recv() {
+            let progress = run_active_scan(
+                &mut *source,
+                config,
+                &commands,
+                master.as_ref(),
+                vehicle_id,
+                &events,
+            );
+            let _ = events.send(RealtimeLoggingEvent::ScanFinished(progress));
+            continue;
+        }
         match source.receive() {
             Ok(frame) => {
+                consecutive_receive_errors = 0;
+                if signal_kind == SignalKind::CanId
+                    && let Some(master) = &master
+                    && let Err(error) = master.observe_can_id(
+                        vehicle_id,
+                        frame.id,
+                        frame.is_extended,
+                        frame.data.len() as u8,
+                        frame.received_at,
+                    )
+                {
+                    let _ = events.send(RealtimeLoggingEvent::SaveError(format!(
+                        "CAN ID observation was not saved: {error}"
+                    )));
+                }
                 if let Some(decoded_values) = decode_frame(signal_kind, &frame, &definitions) {
                     for decoded_value in &decoded_values {
                         let _ = events.send(RealtimeLoggingEvent::Decoded {
@@ -141,11 +213,16 @@ fn run_realtime_logging(
                 }
             }
             Err(error) => {
+                consecutive_receive_errors = consecutive_receive_errors.saturating_add(1);
                 if last_receive_error.elapsed() >= RECEIVE_ERROR_INTERVAL {
                     let _ = events.send(RealtimeLoggingEvent::ReceiveError(error.to_string()));
                     last_receive_error = Instant::now();
                 }
                 thread::sleep(Duration::from_millis(20));
+                if consecutive_receive_errors >= 50 {
+                    let _ = events.send(RealtimeLoggingEvent::ConnectionLost(error.to_string()));
+                    break;
+                }
             }
         }
 
@@ -172,7 +249,101 @@ fn run_realtime_logging(
         &events,
         &mut total_frames,
     );
+    if let Some(master) = master
+        && let Err(error) = master.end_connection_session(
+            connection_session_id,
+            chrono::Utc::now(),
+            "capture_stopped",
+        )
+    {
+        let _ = events.send(RealtimeLoggingEvent::SaveError(format!(
+            "Connection session was not closed: {error}"
+        )));
+    }
     let _ = events.send(RealtimeLoggingEvent::Stopped);
+}
+
+fn run_active_scan(
+    source: &mut dyn CanFrameSource,
+    config: PidScanConfig,
+    commands: &Receiver<LoggingCommand>,
+    master: Option<&SqliteMasterRepository>,
+    vehicle_id: i64,
+    events: &Sender<RealtimeLoggingEvent>,
+) -> PidScanProgress {
+    if config.validate().is_err() {
+        return PidScanProgress {
+            stopped: true,
+            errors: 1,
+            ..Default::default()
+        };
+    }
+    let mut progress = PidScanProgress::default();
+    let history_id = master.and_then(|master| {
+        master
+            .start_pid_scan(
+                vehicle_id,
+                config.service,
+                config.start_pid,
+                config.end_pid,
+                config.interval.as_millis() as u64,
+                chrono::Utc::now(),
+            )
+            .ok()
+    });
+    let mut consecutive_errors = 0_u8;
+    for pid in config.start_pid..=config.end_pid {
+        if matches!(commands.try_recv(), Ok(LoggingCommand::CancelScan)) {
+            progress.stopped = true;
+            break;
+        }
+        match source.probe_pid(config.service, pid, config.response_timeout) {
+            Ok(responded) => {
+                consecutive_errors = 0;
+                if responded {
+                    progress.responses += 1;
+                    if let Some(master) = master {
+                        let _ = master.observe_unknown_pid(
+                            vehicle_id,
+                            "",
+                            config.service,
+                            pid,
+                            chrono::Utc::now(),
+                        );
+                    }
+                }
+            }
+            Err(_) => {
+                progress.errors += 1;
+                consecutive_errors += 1;
+                if consecutive_errors >= 5 {
+                    progress.stopped = true;
+                }
+            }
+        }
+        progress.scanned += 1;
+        let _ = events.send(RealtimeLoggingEvent::ScanProgress(progress));
+        if progress.stopped {
+            break;
+        }
+        thread::sleep(config.interval);
+    }
+    if let (Some(master), Some(id)) = (master, history_id) {
+        let status = if progress.stopped {
+            "stopped"
+        } else {
+            "completed"
+        };
+        let _ = master.finish_pid_scan(
+            id,
+            progress.scanned,
+            progress.responses,
+            progress.errors,
+            status,
+            chrono::Utc::now(),
+        );
+    }
+    progress
 }
 
 fn format_duckdb_write_open_error(path: &std::path::Path, error: &anyhow::Error) -> String {

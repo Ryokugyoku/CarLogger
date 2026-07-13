@@ -6,6 +6,8 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use car_logger_application::connection::DEFAULT_CONNECT_TIMEOUT;
+use car_logger_application::pid_scan::PidProbe;
 use car_logger_application::{
     CanFrameSource, DiagnosticObservation, DiagnosticQuality, DtcReading,
 };
@@ -129,8 +131,16 @@ impl SerialCanSource {
         const CANDIDATE_BAUD_RATES: &[u32] = &[115_200, 38_400, 57_600, 9_600];
 
         let mut failures = Vec::new();
+        let started = Instant::now();
         for baud_rate in CANDIDATE_BAUD_RATES {
-            match Self::open_obd2_with_probe(port_name, *baud_rate) {
+            let Some(remaining) = DEFAULT_CONNECT_TIMEOUT.checked_sub(started.elapsed()) else {
+                break;
+            };
+            match Self::open_obd2_with_probe(
+                port_name,
+                *baud_rate,
+                remaining.min(Duration::from_millis(8_000)),
+            ) {
                 Ok(source) => {
                     tracing::info!(port = port_name, baud_rate, "ELM327 OBD-II probe succeeded");
                     return Ok(source);
@@ -177,10 +187,10 @@ impl SerialCanSource {
         })
     }
 
-    fn open_obd2_with_probe(port_name: &str, baud_rate: u32) -> Result<Self> {
+    fn open_obd2_with_probe(port_name: &str, baud_rate: u32, timeout: Duration) -> Result<Self> {
         let mut source = Self::open_with_mode(port_name, baud_rate, ConnectionMode::Obd2)?;
         source.configure_obd_poll_pids()?;
-        let frame = source.probe_any_obd_pid(Duration::from_millis(8_000))?;
+        let frame = source.probe_any_obd_pid(timeout)?;
         source.parser.frames.push_back(frame);
         Ok(source)
     }
@@ -217,6 +227,10 @@ impl CanFrameSource for SerialCanSource {
         Ok(parse_mode_09_vin(&response))
     }
 
+    fn probe_pid(&mut self, service: u8, pid: u8, timeout: Duration) -> Result<bool> {
+        PidProbe::probe(self, service, pid, timeout)
+    }
+
     fn take_diagnostic_observation(&mut self) -> Option<DiagnosticObservation> {
         self.diagnostic.pending.pop_front()
     }
@@ -245,6 +259,28 @@ impl CanFrameSource for SerialCanSource {
             error,
             session_id: None,
         })
+    }
+}
+
+impl PidProbe for SerialCanSource {
+    fn is_connected(&self) -> bool {
+        self.parser.mode == ConnectionMode::Obd2
+    }
+
+    fn probe(&mut self, service: u8, pid: u8, timeout: Duration) -> Result<bool> {
+        anyhow::ensure!(
+            matches!(service, 0x01 | 0x02 | 0x09),
+            "読み取り専用サービスだけを送信できます"
+        );
+        write_elm327_command(&mut self.port, &format!("{service:02X}{pid:02X}"))?;
+        let response = read_elm327_response(&mut self.port, timeout);
+        if response.to_ascii_uppercase().contains("NO DATA") {
+            return Ok(false);
+        }
+        if is_elm327_error_response(&response) {
+            anyhow::bail!("PID探索要求が失敗しました: {response:?}");
+        }
+        Ok(elm327_response_lines(&response).next().is_some())
     }
 }
 

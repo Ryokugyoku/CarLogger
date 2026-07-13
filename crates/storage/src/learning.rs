@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn feature_schema_feedback_and_jsonl_round_trip() {
-        let mut repository = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut repository = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         let at = Utc::now();
         repository
             .save_learning_feature(&LearningFeature {

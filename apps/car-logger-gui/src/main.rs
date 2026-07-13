@@ -11,7 +11,7 @@ use crate::dashboard::create_dashboard;
 use crate::live_dashboard::setup_dashboard_refresh;
 use crate::localization::{LANGUAGE_SETTING_KEY, Language, apply_language};
 use crate::realtime_logging::{
-    RealtimeLoggingEvent, RealtimeLoggingSession, spawn_realtime_logging,
+    RealtimeLoggingConfig, RealtimeLoggingEvent, RealtimeLoggingSession, spawn_realtime_logging,
 };
 use crate::signal_decoder::definition_map;
 use crate::ui::TranslationManager;
@@ -21,8 +21,12 @@ use crate::ui::log_charts::LogChartsView;
 use crate::ui::settings::SettingsView;
 use crate::ui::sidebar::Sidebar;
 use car_logger_application::CanFrameSource;
-use car_logger_domain::{RealtimeState, SignalKind};
-use car_logger_storage::{StorageRepository, VehicleProfile};
+use car_logger_application::connection::{
+    ConnectionTarget, IdentificationOutcome, identify_vehicle,
+};
+use car_logger_application::pid_scan::PidScanConfig;
+use car_logger_domain::{FuelType, RealtimeState, SignalKind};
+use car_logger_storage::{NewVehicle, StorageRepository};
 #[cfg(target_os = "linux")]
 use car_logger_transport::SocketCanSource;
 use car_logger_transport::{ConnectionMode, SerialCanSource, list_connected_interfaces};
@@ -210,6 +214,7 @@ fn build_ui(
         &builder,
         &window,
         repository.clone(),
+        database_path.clone(),
         config::log_database_path(&database_path),
         realtime_state.clone(),
         is_connected.clone(),
@@ -233,6 +238,10 @@ fn build_ui(
         translation_manager.clone(),
         config::log_database_path(&database_path),
         is_connected.clone(),
+        repository
+            .as_ref()
+            .and_then(|repo| repo.vehicles(false).ok()?.first().map(|v| v.id))
+            .unwrap_or(0),
     );
     if let Some(lbl) = builder.object::<Label>("lbl_logs_title") {
         translation_manager.borrow_mut().add(lbl, "Log Analysis");
@@ -270,6 +279,10 @@ fn build_ui(
             .as_ref()
             .is_some_and(|repo| repo.is_log_read_only()),
         &window,
+        repository
+            .as_ref()
+            .and_then(|repo| repo.vehicles(false).ok())
+            .unwrap_or_default(),
     );
     health_container.append(health_view.widget());
 
@@ -551,6 +564,7 @@ fn setup_transport_header(
     builder: &gtk::Builder,
     window: &ApplicationWindow,
     repository: Option<Rc<StorageRepository>>,
+    master_database_path: PathBuf,
     log_database_path: PathBuf,
     realtime_state: Arc<RealtimeState>,
     is_connected: Arc<AtomicBool>,
@@ -576,6 +590,11 @@ fn setup_transport_header(
     let vehicle_detail: Label = builder
         .object("lbl_vehicle_detail")
         .expect("Could not find lbl_vehicle_detail");
+    let scan_button = Button::with_label("積極PID探索");
+    scan_button.set_sensitive(false);
+    if let Some(header) = builder.object::<GtkBox>("transport_header") {
+        header.append(&scan_button);
+    }
     render_vehicle_header(repository.as_deref(), &vehicle_name, &vehicle_detail);
     vehicle_button.connect_clicked(glib::clone!(
         #[weak]
@@ -587,7 +606,7 @@ fn setup_transport_header(
         #[strong]
         vehicle_detail,
         move |_| {
-            show_vehicle_dialog(&window, repository.clone(), &vehicle_name, &vehicle_detail);
+            show_vehicle_manager(&window, repository.clone(), &vehicle_name, &vehicle_detail);
         }
     ));
 
@@ -610,6 +629,9 @@ fn setup_transport_header(
     }
 
     let active_session: Rc<RefCell<Option<RealtimeLoggingSession>>> = Rc::new(RefCell::new(None));
+    let reconnect_attempts = Rc::new(Cell::new(0_u8));
+    let connection_lost = Rc::new(Cell::new(false));
+    let scan_running = Rc::new(Cell::new(false));
     let (event_sender, event_receiver) = unbounded::<RealtimeLoggingEvent>();
 
     glib::timeout_add_local(
@@ -625,6 +647,14 @@ fn setup_transport_header(
             is_connected,
             #[strong]
             realtime_state,
+            #[strong]
+            reconnect_attempts,
+            #[strong]
+            connection_lost,
+            #[strong]
+            scan_button,
+            #[strong]
+            scan_running,
             move || {
                 for event in event_receiver.try_iter() {
                     match event {
@@ -641,6 +671,29 @@ fn setup_transport_header(
                         RealtimeLoggingEvent::ReceiveError(error) => {
                             status_label.set_text(&format!("Receive warning: {error}"));
                         }
+                        RealtimeLoggingEvent::ConnectionLost(error) => {
+                            connection_lost.set(true);
+                            status_label.set_text(&format!("切断: {error}"));
+                        }
+                        RealtimeLoggingEvent::VehicleChanged => {
+                            connection_lost.set(true);
+                            status_label
+                                .set_text("車両識別情報が変化したためセッションを終了しました");
+                        }
+                        RealtimeLoggingEvent::ScanProgress(progress) => {
+                            status_label.set_text(&format!(
+                                "PID探索: {}/{} 応答 {} エラー {}",
+                                progress.scanned, 33, progress.responses, progress.errors
+                            ));
+                        }
+                        RealtimeLoggingEvent::ScanFinished(progress) => {
+                            scan_running.set(false);
+                            scan_button.set_label("積極PID探索");
+                            status_label.set_text(&format!(
+                                "PID探索終了: 探索 {} 応答 {} エラー {}",
+                                progress.scanned, progress.responses, progress.errors
+                            ));
+                        }
                         RealtimeLoggingEvent::SaveError(error) => {
                             status_label.set_text(&format!("Save warning: {error}"));
                         }
@@ -649,7 +702,33 @@ fn setup_transport_header(
                             is_connected.store(false, Ordering::Relaxed);
                             realtime_state.clear();
                             connect_button.set_label("Connect");
+                            scan_button.set_sensitive(false);
                             status_label.set_text("Disconnected");
+                            if connection_lost.replace(false) {
+                                let attempt = reconnect_attempts.get().saturating_add(1);
+                                reconnect_attempts.set(attempt);
+                                if attempt <= 3 {
+                                    status_label
+                                        .set_text(&format!("5秒後に再接続します ({attempt}/3)"));
+                                    glib::timeout_add_local_once(
+                                        Duration::from_secs(5),
+                                        glib::clone!(
+                                            #[strong]
+                                            connect_button,
+                                            #[strong]
+                                            status_label,
+                                            move || {
+                                                status_label
+                                                    .set_text(&format!("再接続中 ({attempt}/3)"));
+                                                connect_button.emit_clicked();
+                                            }
+                                        ),
+                                    );
+                                } else {
+                                    status_label
+                                        .set_text("再接続に3回失敗しました。手動接続してください");
+                                }
+                            }
                         }
                     }
                 }
@@ -658,6 +737,42 @@ fn setup_transport_header(
             }
         ),
     );
+
+    let auto_target = repository
+        .as_ref()
+        .and_then(|repo| repo.last_connection_target().ok().flatten())
+        .filter(|target| {
+            interfaces
+                .iter()
+                .any(|interface| interface.path == target.adapter)
+        });
+    if let Some(target) = &auto_target {
+        interface_combo.set_active_id(Some(&target.adapter));
+        if target.interface == "OBD-2" {
+            mode_combo.set_active_id(Some("obd2"));
+        }
+        status_label.set_text(&format!("自動接続待機中: {}", target.adapter));
+    }
+
+    scan_button.connect_clicked(glib::clone!(#[strong] active_session, #[strong] scan_running, #[weak] window, move |button| {
+        if scan_running.replace(true) {
+            if let Some(session) = active_session.borrow().as_ref() { session.cancel_pid_scan(); }
+            button.set_label("停止中…");
+            return;
+        }
+        let confirmation = MessageDialog::builder().transient_for(&window).modal(true).message_type(gtk::MessageType::Warning)
+            .text("積極的PID探索を開始しますか？")
+            .secondary_text("安全な場所に停車し、必ずパーキング状態で実行してください。読み取り専用サービス01、PID 00〜20を100ms間隔で探索します。いつでも停止できます。")
+            .buttons(gtk::ButtonsType::OkCancel).build();
+        confirmation.connect_response(glib::clone!(#[strong] active_session, #[strong] scan_running, #[weak] button, move |dialog,response| {
+            dialog.close();
+            if response == gtk::ResponseType::Ok {
+                if let Some(session)=active_session.borrow().as_ref(){ session.start_pid_scan(PidScanConfig::default()); button.set_label("PID探索を停止"); }
+                else { scan_running.set(false); }
+            } else { scan_running.set(false); }
+        }));
+        confirmation.present();
+    }));
 
     connect_button.connect_clicked(glib::clone!(
         #[strong]
@@ -677,13 +792,25 @@ fn setup_transport_header(
         #[strong]
         log_database_path,
         #[strong]
+        master_database_path,
+        #[strong]
         realtime_state,
         #[strong]
         is_connected,
+        #[strong]
+        reconnect_attempts,
+        #[strong]
+        connection_lost,
+        #[strong]
+        vehicle_name,
+        #[strong]
+        vehicle_detail,
         #[weak]
         window,
         move |_| {
             if let Some(session) = active_session.borrow_mut().take() {
+                reconnect_attempts.set(0);
+                connection_lost.set(false);
                 is_connected.store(false, Ordering::Relaxed);
                 session.request_stop();
                 connect_button.set_label("Stopping...");
@@ -707,23 +834,81 @@ fn setup_transport_header(
 
             match open_transport_source(&interface_path, mode) {
                 Ok(mut source) => {
-                    let registered = repository.as_ref().and_then(|repo| repo.vehicle_profile().ok().flatten()).and_then(|vehicle| vehicle.vin);
                     let observed = source.vehicle_vin().ok().flatten();
-                    if let Some(expected) = registered
-                        && observed.as_deref() != Some(expected.as_str())
-                    {
-                            let found = observed.as_deref().unwrap_or("VINを取得できませんでした");
-                            let dialog = MessageDialog::builder()
-                                .transient_for(&window).modal(true)
-                                .message_type(gtk::MessageType::Warning)
-                                .text("登録車両と接続車両が一致しません")
-                                .secondary_text(format!("登録VIN: {expected}\n接続先: {found}\n安全のためデータ取得を開始しません。車両と登録情報を確認してください。"))
-                                .buttons(gtk::ButtonsType::Close).build();
-                            dialog.connect_response(|dialog, _| dialog.close());
-                            dialog.present();
-                            status_label.set_text("Vehicle mismatch — logging blocked");
+                    let Some(repo) = repository.as_ref() else {
+                        status_label.set_text("Database unavailable — logging blocked");
+                        return;
+                    };
+                    let vehicles = repo.vehicles(false).unwrap_or_default();
+                    let vehicle_id = match identify_vehicle(observed.as_deref(), &vehicles) {
+                        IdentificationOutcome::ExistingVehicle { vehicle_id } => vehicle_id,
+                        IdentificationOutcome::SelectionRequired => {
+                            match choose_vehicle_without_vin(&window, &vehicles) {
+                                VehicleConnectionChoice::Existing(id) => id,
+                                VehicleConnectionChoice::New => {
+                                    show_vehicle_dialog(
+                                        &window,
+                                        repository.clone(),
+                                        &vehicle_name,
+                                        &vehicle_detail,
+                                        None,
+                                    );
+                                    status_label
+                                        .set_text("新しい車両の登録完了後に再接続してください");
+                                    return;
+                                }
+                                VehicleConnectionChoice::Cancelled => {
+                                    status_label.set_text("車両選択をキャンセルしました");
+                                    return;
+                                }
+                            }
+                        }
+                        IdentificationOutcome::RegistrationRequired { normalized_vin } => {
+                            show_vehicle_dialog(
+                                &window,
+                                repository.clone(),
+                                &vehicle_name,
+                                &vehicle_detail,
+                                normalized_vin,
+                            );
+                            status_label
+                                .set_text("Vehicle registration required — logging blocked");
                             return;
-                    }
+                        }
+                        IdentificationOutcome::InvalidVin(error) => {
+                            show_registration_required(&window, &format!("VINが不正です: {error}"));
+                            status_label.set_text("Invalid VIN — logging blocked");
+                            return;
+                        }
+                    };
+                    let expected_vin = vehicles
+                        .iter()
+                        .find(|vehicle| vehicle.id == vehicle_id)
+                        .and_then(|vehicle| vehicle.normalized_vin.clone());
+                    let target = ConnectionTarget {
+                        interface: mode_label.clone(),
+                        adapter: interface_path.clone(),
+                        safe_settings_json: format!(
+                            "{{\"mode\":\"{}\"}}",
+                            if mode == ConnectionMode::Obd2 {
+                                "obd2"
+                            } else {
+                                "stream"
+                            }
+                        ),
+                    };
+                    let now = chrono::Utc::now();
+                    let connection_session_id =
+                        match repo.start_connection_session(&target, now).and_then(|id| {
+                            repo.identify_connection_session(id, vehicle_id, now)
+                                .map(|_| id)
+                        }) {
+                            Ok(id) => id,
+                            Err(error) => {
+                                status_label.set_text(&format!("Session error: {error}"));
+                                return;
+                            }
+                        };
                     let signal_kind = signal_kind_for_mode(mode);
                     let definitions = repository
                         .as_ref()
@@ -732,14 +917,22 @@ fn setup_transport_header(
                         .unwrap_or_default();
                     let session = spawn_realtime_logging(
                         source,
-                        signal_kind,
-                        definitions,
-                        log_database_path.clone(),
-                        realtime_state.clone(),
-                        event_sender.clone(),
+                        RealtimeLoggingConfig {
+                            signal_kind,
+                            definitions,
+                            log_database_path: log_database_path.clone(),
+                            master_database_path: master_database_path.clone(),
+                            vehicle_id,
+                            connection_session_id,
+                            expected_vin,
+                            realtime_state: realtime_state.clone(),
+                            events: event_sender.clone(),
+                        },
                     );
                     active_session.replace(Some(session));
                     is_connected.store(true, Ordering::Relaxed);
+                    scan_button.set_sensitive(mode == ConnectionMode::Obd2);
+                    reconnect_attempts.set(0);
                     connect_button.set_label("Disconnect");
                     status_label.set_text(&format!("Connected: {interface_label} / {mode_label}"));
                 }
@@ -748,14 +941,122 @@ fn setup_transport_header(
                     is_connected.store(false, Ordering::Relaxed);
                     connect_button.set_label("Connect");
                     status_label.set_text(&format!("Connection failed: {error}"));
+                    let attempt = reconnect_attempts.get();
+                    if attempt > 0 && attempt < 3 {
+                        let next = attempt + 1;
+                        reconnect_attempts.set(next);
+                        status_label
+                            .set_text(&format!("再接続失敗。5秒後に再試行します ({next}/3)"));
+                        glib::timeout_add_local_once(
+                            Duration::from_secs(5),
+                            glib::clone!(
+                                #[strong]
+                                connect_button,
+                                move || connect_button.emit_clicked()
+                            ),
+                        );
+                    } else if attempt >= 3 {
+                        status_label.set_text("再接続に3回失敗しました。手動接続してください");
+                    }
                 }
             }
         }
     ));
+    if auto_target.is_some() {
+        glib::idle_add_local_once(glib::clone!(
+            #[strong]
+            connect_button,
+            #[strong]
+            status_label,
+            move || {
+                status_label.set_text("最後に成功した接続先へ自動接続中（キャンセルは切断ボタン）");
+                connect_button.emit_clicked();
+            }
+        ));
+    }
+}
+
+enum VehicleConnectionChoice {
+    Existing(i64),
+    New,
+    Cancelled,
+}
+
+fn choose_vehicle_without_vin(
+    window: &ApplicationWindow,
+    vehicles: &[car_logger_domain::Vehicle],
+) -> VehicleConnectionChoice {
+    let dialog = Dialog::builder()
+        .title("VINを取得できませんでした")
+        .transient_for(window)
+        .modal(true)
+        .default_width(460)
+        .build();
+    dialog.add_button("キャンセル", gtk::ResponseType::Cancel);
+    dialog.add_button("新しい車両として登録", gtk::ResponseType::Other(1));
+    dialog.add_button("選択した車両として接続", gtk::ResponseType::Accept);
+    let content = GtkBox::new(gtk::Orientation::Vertical, 10);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    let explanation = Label::new(Some(
+        "VINから車両を一意に判断できないため、推測では紐付けません。登録済み車両を明示的に選択するか、新規登録してください。",
+    ));
+    explanation.set_wrap(true);
+    content.append(&explanation);
+    let selector = ComboBoxText::new();
+    for vehicle in vehicles {
+        selector.append(Some(&vehicle.id.to_string()), &vehicle.display_name);
+    }
+    selector.set_active((!vehicles.is_empty()).then_some(0));
+    content.append(&selector);
+    dialog.content_area().append(&content);
+
+    let response = Rc::new(Cell::<i32>::new(gtk::ResponseType::None.into()));
+    let event_loop = glib::MainLoop::new(None, false);
+    dialog.connect_response(glib::clone!(
+        #[strong]
+        response,
+        #[strong]
+        event_loop,
+        move |dialog, value| {
+            response.set(value.into());
+            dialog.close();
+            event_loop.quit();
+        }
+    ));
+    dialog.present();
+    event_loop.run();
+    match gtk::ResponseType::from(response.get()) {
+        gtk::ResponseType::Accept => selector
+            .active_id()
+            .and_then(|id| id.parse().ok())
+            .map(VehicleConnectionChoice::Existing)
+            .unwrap_or(VehicleConnectionChoice::Cancelled),
+        gtk::ResponseType::Other(1) => VehicleConnectionChoice::New,
+        _ => VehicleConnectionChoice::Cancelled,
+    }
+}
+
+fn show_registration_required(window: &ApplicationWindow, detail: &str) {
+    let dialog = MessageDialog::builder()
+        .transient_for(window)
+        .modal(true)
+        .message_type(gtk::MessageType::Warning)
+        .text("車両の確定が必要です")
+        .secondary_text(detail)
+        .buttons(gtk::ButtonsType::Close)
+        .build();
+    dialog.connect_response(|dialog, _| dialog.close());
+    dialog.present();
 }
 
 fn render_vehicle_header(repository: Option<&StorageRepository>, name: &Label, detail: &Label) {
-    match repository.and_then(|repo| repo.vehicle_profile().ok().flatten()) {
+    let vehicles = repository
+        .and_then(|repo| repo.vehicles(false).ok())
+        .unwrap_or_default();
+    match vehicles.first() {
         Some(vehicle) => {
             name.set_text(&vehicle.display_name);
             let year = vehicle
@@ -763,14 +1064,24 @@ fn render_vehicle_header(repository: Option<&StorageRepository>, name: &Label, d
                 .map(|x| x.to_string())
                 .unwrap_or_else(|| "—".into());
             let vin = vehicle
-                .vin
+                .normalized_vin
                 .as_deref()
                 .map(|x| format!("VIN …{}", &x[11..]))
                 .unwrap_or_else(|| "VIN未登録".into());
             detail.set_text(&format!(
                 "{} {} · {} · {}",
-                vehicle.manufacturer, vehicle.model, year, vin
+                vehicle.manufacturer.as_deref().unwrap_or("—"),
+                vehicle.model.as_deref().unwrap_or("—"),
+                year,
+                vin
             ));
+            if vehicles.len() > 1 {
+                detail.set_text(&format!(
+                    "{} · 登録車両 {}台",
+                    detail.text(),
+                    vehicles.len()
+                ));
+            }
         }
         None => {
             name.set_text("車両未設定");
@@ -784,12 +1095,10 @@ fn show_vehicle_dialog(
     repository: Option<Rc<StorageRepository>>,
     header_name: &Label,
     header_detail: &Label,
+    prefill_vin: Option<String>,
 ) {
-    let current = repository
-        .as_ref()
-        .and_then(|repo| repo.vehicle_profile().ok().flatten());
     let dialog = Dialog::builder()
-        .title("車両情報")
+        .title("新しい車両を登録")
         .transient_for(window)
         .modal(true)
         .default_width(440)
@@ -801,46 +1110,46 @@ fn show_vehicle_dialog(
     form.set_margin_bottom(12);
     form.set_margin_start(12);
     form.set_margin_end(12);
-    let display_name = vehicle_entry(
-        &form,
-        "表示名（必須）",
-        current
-            .as_ref()
-            .map(|v| v.display_name.as_str())
-            .unwrap_or(""),
-    );
-    let manufacturer = vehicle_entry(
-        &form,
-        "メーカー",
-        current
-            .as_ref()
-            .map(|v| v.manufacturer.as_str())
-            .unwrap_or(""),
-    );
-    let model = vehicle_entry(
-        &form,
-        "車種",
-        current.as_ref().map(|v| v.model.as_str()).unwrap_or(""),
-    );
+    let display_name = vehicle_entry(&form, "表示名（必須）", "");
+    let manufacturer = vehicle_entry(&form, "メーカー", "");
+    let model = vehicle_entry(&form, "車種", "");
     let year_label = Label::new(Some("年式"));
     year_label.set_halign(gtk::Align::Start);
     form.append(&year_label);
     let year = SpinButton::with_range(1886.0, 9999.0, 1.0);
-    year.set_value(
-        current
-            .as_ref()
-            .and_then(|v| v.model_year)
-            .map(f64::from)
-            .unwrap_or(2026.0),
-    );
+    year.set_value(2026.0);
     form.append(&year);
+    let fuel_label = Label::new(Some("燃料種別（必須）"));
+    fuel_label.set_halign(gtk::Align::Start);
+    form.append(&fuel_label);
+    let fuel = ComboBoxText::new();
+    for (id, label) in [
+        ("gasoline", "ガソリン"),
+        ("diesel", "ディーゼル"),
+        ("hybrid", "ハイブリッド"),
+        ("electric", "電気"),
+        ("other", "その他"),
+    ] {
+        fuel.append(Some(id), label);
+    }
+    fuel.set_active_id(Some("gasoline"));
+    form.append(&fuel);
+    let displacement_label = Label::new(Some("排気量 L（必須）"));
+    displacement_label.set_halign(gtk::Align::Start);
+    form.append(&displacement_label);
+    let displacement = SpinButton::with_range(0.1, 20.0, 0.1);
+    displacement.set_value(2.0);
+    form.append(&displacement);
+    let tank_label = Label::new(Some("燃料タンク容量 L（必須）"));
+    tank_label.set_halign(gtk::Align::Start);
+    form.append(&tank_label);
+    let tank = SpinButton::with_range(0.1, 500.0, 0.1);
+    tank.set_value(50.0);
+    form.append(&tank);
     let vin = vehicle_entry(
         &form,
         "VIN（車両変更検知に使用する17桁）",
-        current
-            .as_ref()
-            .and_then(|v| v.vin.as_deref())
-            .unwrap_or(""),
+        prefill_vin.as_deref().unwrap_or(""),
     );
     let note = Label::new(Some(
         "VINは照合だけに使用し、AI入力やエクスポートには含めません。VIN登録後は接続車両を確認できない場合もログ取得を停止します。",
@@ -859,15 +1168,28 @@ fn show_vehicle_dialog(
         move |dialog, response| {
             if response == gtk::ResponseType::Accept {
                 if let Some(repo) = &repository {
-                    let profile = VehicleProfile {
+                    let profile = NewVehicle {
                         display_name: display_name.text().to_string(),
-                        manufacturer: manufacturer.text().to_string(),
-                        model: model.text().to_string(),
+                        manufacturer: (!manufacturer.text().trim().is_empty())
+                            .then(|| manufacturer.text().to_string()),
+                        model: (!model.text().trim().is_empty()).then(|| model.text().to_string()),
                         model_year: Some(year.value_as_int() as u16),
                         vin: (!vin.text().trim().is_empty()).then(|| vin.text().to_string()),
+                        fuel_type: match fuel.active_id().as_deref() {
+                            Some("diesel") => FuelType::Diesel,
+                            Some("hybrid") => FuelType::Hybrid,
+                            Some("electric") => FuelType::Electric,
+                            Some("other") => FuelType::Other,
+                            _ => FuelType::Gasoline,
+                        },
+                        displacement_l: displacement.value(),
+                        tank_capacity_l: tank.value(),
+                        engine: None,
+                        odometer_km: None,
+                        notes: None,
                     };
-                    match repo.save_vehicle_profile(&profile) {
-                        Ok(()) => {
+                    match repo.create_vehicle(&profile, chrono::Utc::now()) {
+                        Ok(_) => {
                             render_vehicle_header(Some(repo), &header_name, &header_detail);
                             dialog.close();
                         }
@@ -891,6 +1213,200 @@ fn show_vehicle_dialog(
         }
     ));
     dialog.present();
+}
+
+fn show_vehicle_manager(
+    window: &ApplicationWindow,
+    repository: Option<Rc<StorageRepository>>,
+    header_name: &Label,
+    header_detail: &Label,
+) {
+    let dialog = Dialog::builder()
+        .title("車両管理")
+        .transient_for(window)
+        .modal(true)
+        .default_width(620)
+        .default_height(480)
+        .build();
+    dialog.add_button("閉じる", gtk::ResponseType::Close);
+    let content = GtkBox::new(gtk::Orientation::Vertical, 12);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    let add = Button::with_label("新しい車両を登録");
+    content.append(&add);
+    let Some(repo) = repository.as_ref() else {
+        content.append(&Label::new(Some("データベースを利用できません")));
+        dialog.content_area().append(&content);
+        dialog.present();
+        return;
+    };
+    match repo.vehicles(true) {
+        Ok(vehicles) => {
+            for vehicle in vehicles {
+                let row = GtkBox::new(gtk::Orientation::Horizontal, 10);
+                let text = if let Some(deleted) = vehicle.deleted_at {
+                    format!(
+                        "{}  削除: {}  完全削除予定: {}",
+                        vehicle.display_name,
+                        deleted.format("%Y-%m-%d"),
+                        vehicle
+                            .purge_after
+                            .map(|v| v.format("%Y-%m-%d").to_string())
+                            .unwrap_or_default()
+                    )
+                } else {
+                    format!(
+                        "{}  {}",
+                        vehicle.display_name,
+                        vehicle.normalized_vin.as_deref().unwrap_or("VIN未取得")
+                    )
+                };
+                let label = Label::new(Some(&text));
+                label.set_hexpand(true);
+                label.set_halign(gtk::Align::Start);
+                row.append(&label);
+                if vehicle.deleted_at.is_some() {
+                    let restore = Button::with_label("復元");
+                    restore.connect_clicked(glib::clone!(
+                        #[strong]
+                        repository,
+                        #[strong]
+                        header_name,
+                        #[strong]
+                        header_detail,
+                        #[weak]
+                        dialog,
+                        move |_| {
+                            if let Some(repo) = &repository {
+                                let _ = repo.restore_vehicle(vehicle.id, chrono::Utc::now());
+                                render_vehicle_header(Some(repo), &header_name, &header_detail);
+                            }
+                            dialog.close();
+                        }
+                    ));
+                    row.append(&restore);
+                    let purge = Button::with_label("完全削除");
+                    purge.add_css_class("destructive-action");
+                    let vehicle_name = vehicle.display_name.clone();
+                    purge.connect_clicked(glib::clone!(
+                        #[strong]
+                        repository,
+                        #[strong]
+                        header_name,
+                        #[strong]
+                        header_detail,
+                        #[weak]
+                        window,
+                        #[weak]
+                        dialog,
+                        move |_| {
+                            if confirm_permanent_vehicle_delete(&window, &vehicle_name) {
+                                if let Some(repo) = &repository {
+                                    let _ =
+                                        repo.permanently_delete_vehicle(vehicle.id, &vehicle_name);
+                                    render_vehicle_header(Some(repo), &header_name, &header_detail);
+                                }
+                                dialog.close();
+                            }
+                        }
+                    ));
+                    row.append(&purge);
+                } else {
+                    let remove = Button::with_label("削除");
+                    remove.connect_clicked(glib::clone!(
+                        #[strong]
+                        repository,
+                        #[strong]
+                        header_name,
+                        #[strong]
+                        header_detail,
+                        #[weak]
+                        dialog,
+                        move |_| {
+                            if let Some(repo) = &repository {
+                                let _ = repo.soft_delete_vehicle(vehicle.id, chrono::Utc::now());
+                                render_vehicle_header(Some(repo), &header_name, &header_detail);
+                            }
+                            dialog.close();
+                        }
+                    ));
+                    row.append(&remove);
+                }
+                content.append(&row);
+            }
+        }
+        Err(error) => content.append(&Label::new(Some(&format!(
+            "車両一覧を読み込めません: {error}"
+        )))),
+    }
+    add.connect_clicked(glib::clone!(
+        #[strong]
+        repository,
+        #[strong]
+        header_name,
+        #[strong]
+        header_detail,
+        #[weak]
+        window,
+        #[weak]
+        dialog,
+        move |_| {
+            dialog.close();
+            show_vehicle_dialog(
+                &window,
+                repository.clone(),
+                &header_name,
+                &header_detail,
+                None,
+            );
+        }
+    ));
+    dialog.connect_response(|dialog, _| dialog.close());
+    dialog.content_area().append(&content);
+    dialog.present();
+}
+
+fn confirm_permanent_vehicle_delete(window: &ApplicationWindow, vehicle_name: &str) -> bool {
+    let dialog = Dialog::builder()
+        .title("車両を完全削除")
+        .transient_for(window)
+        .modal(true)
+        .build();
+    dialog.add_button("キャンセル", gtk::ResponseType::Cancel);
+    dialog.add_button("完全削除", gtk::ResponseType::Accept);
+    let box_ = GtkBox::new(gtk::Orientation::Vertical, 10);
+    box_.set_margin_top(16);
+    box_.set_margin_bottom(16);
+    box_.set_margin_start(16);
+    box_.set_margin_end(16);
+    let warning = Label::new(Some(
+        "車両本体、ログ、健康・診断結果、PID、CAN ID、信号定義、全CANフレームを削除します。取り消せません。確認のため車両名を入力してください。",
+    ));
+    warning.set_wrap(true);
+    box_.append(&warning);
+    let entry = Entry::new();
+    entry.set_placeholder_text(Some(vehicle_name));
+    box_.append(&entry);
+    dialog.content_area().append(&box_);
+    let response = Rc::new(Cell::<i32>::new(gtk::ResponseType::None.into()));
+    let loop_ = glib::MainLoop::new(None, false);
+    dialog.connect_response(glib::clone!(
+        #[strong]
+        response,
+        #[strong]
+        loop_,
+        move |dialog, value| {
+            response.set(value.into());
+            dialog.close();
+            loop_.quit();
+        }
+    ));
+    dialog.present();
+    loop_.run();
+    gtk::ResponseType::from(response.get()) == gtk::ResponseType::Accept
+        && entry.text().as_str() == vehicle_name
 }
 
 fn vehicle_entry(form: &GtkBox, label: &str, value: &str) -> Entry {

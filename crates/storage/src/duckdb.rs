@@ -10,6 +10,8 @@ use crate::paths::ensure_parent_directory;
 pub struct DuckdbCanFrameRepository {
     pub(crate) connection: Connection,
     pub(crate) read_only: bool,
+    capture_context: Option<(i64, i64)>,
+    vehicle_scope: Option<i64>,
 }
 
 impl DuckdbCanFrameRepository {
@@ -25,6 +27,8 @@ impl DuckdbCanFrameRepository {
         let repository = Self {
             connection,
             read_only: false,
+            capture_context: None,
+            vehicle_scope: None,
         };
         repository.initialize()?;
 
@@ -40,6 +44,8 @@ impl DuckdbCanFrameRepository {
         Ok(Self {
             connection,
             read_only: true,
+            capture_context: None,
+            vehicle_scope: None,
         })
     }
 
@@ -49,9 +55,20 @@ impl DuckdbCanFrameRepository {
         let repository = Self {
             connection,
             read_only: false,
+            capture_context: None,
+            vehicle_scope: None,
         };
         repository.initialize()?;
 
+        Ok(repository)
+    }
+
+    pub fn open_in_memory_with_context(
+        vehicle_id: i64,
+        connection_session_id: i64,
+    ) -> Result<Self> {
+        let mut repository = Self::open_in_memory()?;
+        repository.set_capture_context(vehicle_id, connection_session_id);
         Ok(repository)
     }
 
@@ -80,6 +97,8 @@ impl DuckdbCanFrameRepository {
 
                 CREATE TABLE IF NOT EXISTS can_frames (
                     sequence_id BIGINT PRIMARY KEY DEFAULT nextval('can_frames_sequence'),
+                    vehicle_id BIGINT NOT NULL,
+                    connection_session_id BIGINT NOT NULL,
                     signal_type TEXT NOT NULL DEFAULT 'PID',
                     can_id UBIGINT NOT NULL,
                     is_extended BOOLEAN NOT NULL,
@@ -89,7 +108,10 @@ impl DuckdbCanFrameRepository {
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_can_frames_can_id
-                    ON can_frames(can_id);
+                    ON can_frames(vehicle_id, can_id);
+
+                CREATE INDEX IF NOT EXISTS idx_can_frames_session
+                    ON can_frames(vehicle_id, connection_session_id, received_at);
 
                 CREATE INDEX IF NOT EXISTS idx_can_frames_signal_lookup
                     ON can_frames(signal_type, can_id);
@@ -99,6 +121,29 @@ impl DuckdbCanFrameRepository {
 
                 CREATE INDEX IF NOT EXISTS idx_can_frames_retention
                     ON can_frames(signal_type, received_at, sequence_id);
+
+                CREATE SEQUENCE IF NOT EXISTS pid_samples_sequence;
+                CREATE TABLE IF NOT EXISTS pid_samples (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('pid_samples_sequence'),
+                    vehicle_id BIGINT NOT NULL, connection_session_id BIGINT NOT NULL,
+                    ecu_header TEXT NOT NULL, service UTINYINT NOT NULL, pid UTINYINT NOT NULL,
+                    raw_data BLOB NOT NULL, calculated_value DOUBLE,
+                    definition_version_id BIGINT NOT NULL, calculated_at TEXT NOT NULL,
+                    received_at TIMESTAMPTZ NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_pid_samples_vehicle_time
+                    ON pid_samples(vehicle_id, received_at);
+                CREATE INDEX IF NOT EXISTS idx_pid_samples_definition
+                    ON pid_samples(vehicle_id, service, pid, definition_version_id);
+                CREATE SEQUENCE IF NOT EXISTS pid_recalculation_runs_sequence;
+                CREATE TABLE IF NOT EXISTS pid_recalculation_runs (
+                    id BIGINT PRIMARY KEY DEFAULT nextval('pid_recalculation_runs_sequence'),
+                    vehicle_id BIGINT NOT NULL, service UTINYINT NOT NULL, pid UTINYINT NOT NULL,
+                    definition_version_id BIGINT NOT NULL, period_start TEXT NOT NULL,
+                    period_end TEXT NOT NULL, target_count UBIGINT NOT NULL,
+                    success_count UBIGINT NOT NULL, failure_count UBIGINT NOT NULL,
+                    status TEXT NOT NULL, created_at TEXT NOT NULL
+                );
 
                 CREATE TABLE IF NOT EXISTS can_frame_seconds (
                     signal_type TEXT NOT NULL,
@@ -123,21 +168,23 @@ impl DuckdbCanFrameRepository {
                 CREATE SEQUENCE IF NOT EXISTS driving_sessions_sequence;
                 CREATE TABLE IF NOT EXISTS driving_sessions (
                     id BIGINT PRIMARY KEY DEFAULT nextval('driving_sessions_sequence'),
+                    vehicle_id BIGINT NOT NULL,
                     started_at TEXT NOT NULL, ended_at TEXT NOT NULL,
                     sample_count UBIGINT NOT NULL, complete BOOLEAN NOT NULL,
                     algorithm_version TEXT NOT NULL,
-                    UNIQUE(started_at, ended_at, algorithm_version)
+                    UNIQUE(vehicle_id, started_at, ended_at, algorithm_version)
                 );
                 CREATE SEQUENCE IF NOT EXISTS health_score_periods_sequence;
                 CREATE TABLE IF NOT EXISTS health_score_periods (
                     id BIGINT PRIMARY KEY DEFAULT nextval('health_score_periods_sequence'),
+                    vehicle_id BIGINT NOT NULL,
                     granularity TEXT NOT NULL, period_start TEXT NOT NULL, period_end TEXT NOT NULL,
                     overall_score DOUBLE, confidence DOUBLE NOT NULL, status TEXT NOT NULL,
                     session_count UINTEGER NOT NULL, evaluated_seconds DOUBLE NOT NULL,
                     sample_count UBIGINT NOT NULL, data_coverage DOUBLE NOT NULL,
                     algorithm_version TEXT NOT NULL, baseline_version TEXT NOT NULL,
                     feature_schema_version TEXT NOT NULL, calculated_at TEXT NOT NULL,
-                    UNIQUE(granularity, period_start, period_end, algorithm_version, baseline_version, feature_schema_version)
+                    UNIQUE(vehicle_id, granularity, period_start, period_end, algorithm_version, baseline_version, feature_schema_version)
                 );
                 CREATE TABLE IF NOT EXISTS health_score_components (
                     score_id BIGINT NOT NULL, domain TEXT NOT NULL, score DOUBLE,
@@ -157,19 +204,21 @@ impl DuckdbCanFrameRepository {
                     PRIMARY KEY(session_id, signal_key, driving_state, feature_schema_version)
                 );
                 CREATE TABLE IF NOT EXISTS health_baselines (
-                    version TEXT PRIMARY KEY, algorithm_version TEXT NOT NULL,
+                    vehicle_id BIGINT NOT NULL, version TEXT NOT NULL, algorithm_version TEXT NOT NULL,
                     feature_schema_version TEXT NOT NULL, valid_session_count UINTEGER NOT NULL,
                     total_seconds DOUBLE NOT NULL, window_start TEXT, window_end TEXT,
-                    baseline_json TEXT NOT NULL, created_at TEXT NOT NULL
+                    baseline_json TEXT NOT NULL, created_at TEXT NOT NULL,
+                    PRIMARY KEY(vehicle_id, version)
                 );
                 CREATE TABLE IF NOT EXISTS health_backfill_state (
-                    operation TEXT PRIMARY KEY, last_sequence_id BIGINT NOT NULL,
+                    vehicle_id BIGINT NOT NULL, operation TEXT NOT NULL, last_sequence_id BIGINT NOT NULL,
                     total_rows UBIGINT NOT NULL, processed_rows UBIGINT NOT NULL,
-                    completed BOOLEAN NOT NULL, updated_at TEXT NOT NULL
+                    completed BOOLEAN NOT NULL, updated_at TEXT NOT NULL,
+                    PRIMARY KEY(vehicle_id, operation)
                 );
                 CREATE SEQUENCE IF NOT EXISTS dtc_events_sequence;
                 CREATE TABLE IF NOT EXISTS dtc_events (
-                    id BIGINT PRIMARY KEY DEFAULT nextval('dtc_events_sequence'), code TEXT NOT NULL,
+                    id BIGINT PRIMARY KEY DEFAULT nextval('dtc_events_sequence'), vehicle_id BIGINT NOT NULL, code TEXT NOT NULL,
                     ecu TEXT, first_detected_at TEXT NOT NULL, last_detected_at TEXT NOT NULL,
                     active BOOLEAN NOT NULL, cleared_at TEXT, occurrence UINTEGER NOT NULL,
                     source_service TEXT NOT NULL, session_id BIGINT
@@ -177,12 +226,12 @@ impl DuckdbCanFrameRepository {
                 CREATE SEQUENCE IF NOT EXISTS dtc_observations_sequence;
                 CREATE TABLE IF NOT EXISTS dtc_observations (
                     id BIGINT PRIMARY KEY DEFAULT nextval('dtc_observations_sequence'),
-                    observed_at TEXT NOT NULL, mil_on BOOLEAN, reported_count UINTEGER,
+                    vehicle_id BIGINT NOT NULL, observed_at TEXT NOT NULL, mil_on BOOLEAN, reported_count UINTEGER,
                     quality TEXT NOT NULL, error TEXT, source_service TEXT NOT NULL,
                     session_id BIGINT, event_ids_json TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS diagnostic_state (
-                    singleton UTINYINT PRIMARY KEY, supported BOOLEAN, mil_on BOOLEAN,
+                    vehicle_id BIGINT PRIMARY KEY, supported BOOLEAN, mil_on BOOLEAN,
                     last_observed_at TEXT, last_error TEXT
                 );
                 CREATE SEQUENCE IF NOT EXISTS learning_features_sequence;
@@ -290,6 +339,31 @@ impl DuckdbCanFrameRepository {
         &self.connection
     }
 
+    /// Selects the only vehicle/session to which subsequent writes may belong.
+    /// Changing this context must happen only after the previous capture worker
+    /// has stopped, so one batch can never span two vehicles.
+    pub fn set_capture_context(&mut self, vehicle_id: i64, connection_session_id: i64) {
+        self.capture_context = Some((vehicle_id, connection_session_id));
+        self.vehicle_scope = Some(vehicle_id);
+    }
+
+    pub fn clear_capture_context(&mut self) {
+        self.capture_context = None;
+    }
+
+    pub fn capture_context(&self) -> Option<(i64, i64)> {
+        self.capture_context
+    }
+
+    pub fn select_vehicle(&mut self, vehicle_id: i64) {
+        self.vehicle_scope = Some(vehicle_id);
+    }
+
+    pub(crate) fn vehicle_scope(&self) -> Result<i64> {
+        self.vehicle_scope
+            .context("閲覧対象車両が選択されていません")
+    }
+
     pub fn list_observations(&self, kind: SignalKind) -> Result<Vec<CanIdObservation>> {
         let mut statement = self.connection.prepare(
             r#"
@@ -338,6 +412,26 @@ impl DuckdbCanFrameRepository {
         self.list_observations(SignalKind::CanId)
     }
 
+    pub fn list_observations_for_vehicle(
+        &self,
+        vehicle_id: i64,
+        kind: SignalKind,
+    ) -> Result<Vec<CanIdObservation>> {
+        let mut statement = self.connection.prepare("SELECT can_id,arg_max(data,received_at),epoch_us(max(received_at)),count(*) FROM can_frames WHERE vehicle_id=?1 AND signal_type=?2 GROUP BY can_id ORDER BY can_id")?;
+        let rows = statement.query_map(params![vehicle_id, kind.as_str()], |row| {
+            let micros: i64 = row.get(2)?;
+            Ok(CanIdObservation {
+                id: row.get(0)?,
+                raw_payload: row.get(1)?,
+                last_seen: chrono::DateTime::from_timestamp_micros(micros)
+                    .unwrap_or_else(chrono::Utc::now),
+                count: row.get::<_, i64>(3)? as u64,
+            })
+        })?;
+        rows.collect::<duckdb::Result<Vec<_>>>()
+            .context("車両別ID観測一覧の読み込みに失敗しました")
+    }
+
     pub fn list_recent_frames(&self, limit: u32) -> Result<Vec<CanFrame>> {
         let mut statement = self.connection.prepare(
             r#"
@@ -370,16 +464,79 @@ impl DuckdbCanFrameRepository {
             .context("DuckDBログ履歴の読み込みに失敗しました")
     }
 
+    pub fn list_recent_frames_for_vehicle(
+        &self,
+        vehicle_id: i64,
+        limit: u32,
+    ) -> Result<Vec<CanFrame>> {
+        let mut statement = self.connection.prepare(
+            "SELECT can_id,is_extended,is_remote,data,epoch_us(received_at) FROM (SELECT sequence_id,can_id,is_extended,is_remote,data,received_at FROM can_frames WHERE vehicle_id=?1 ORDER BY sequence_id DESC LIMIT ?2) recent ORDER BY sequence_id",
+        )?;
+        let rows = statement.query_map(params![vehicle_id, limit], |row| {
+            let micros: i64 = row.get(4)?;
+            Ok(CanFrame {
+                id: row.get(0)?,
+                is_extended: row.get(1)?,
+                is_remote: row.get(2)?,
+                data: row.get(3)?,
+                received_at: chrono::DateTime::from_timestamp_micros(micros)
+                    .unwrap_or_else(chrono::Utc::now),
+            })
+        })?;
+        rows.collect::<duckdb::Result<Vec<_>>>()
+            .context("車両別ログ履歴の読み込みに失敗しました")
+    }
+
+    pub fn purge_vehicle(&self, vehicle_id: i64) -> Result<()> {
+        anyhow::ensure!(!self.read_only, "読み取り専用ログから車両を削除できません");
+        self.connection.execute_batch("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<()> {
+            self.connection.execute("DELETE FROM health_score_reasons WHERE score_id IN (SELECT id FROM health_score_periods WHERE vehicle_id=?1)", params![vehicle_id])?;
+            self.connection.execute("DELETE FROM health_score_components WHERE score_id IN (SELECT id FROM health_score_periods WHERE vehicle_id=?1)", params![vehicle_id])?;
+            self.connection.execute("DELETE FROM health_session_features WHERE session_id IN (SELECT id FROM driving_sessions WHERE vehicle_id=?1)", params![vehicle_id])?;
+            for table in [
+                "health_score_periods",
+                "health_baselines",
+                "health_backfill_state",
+                "driving_sessions",
+                "dtc_events",
+                "dtc_observations",
+                "diagnostic_state",
+                "pid_samples",
+                "pid_recalculation_runs",
+                "can_frames",
+            ] {
+                self.connection.execute(
+                    &format!("DELETE FROM {table} WHERE vehicle_id=?1"),
+                    params![vehicle_id],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.connection.execute_batch("COMMIT").map_err(Into::into),
+            Err(error) => {
+                let _ = self.connection.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     pub fn save_with_kind(&mut self, kind: SignalKind, frame: &CanFrame) -> Result<()> {
         anyhow::ensure!(
             !self.read_only,
             "DuckDBログは読み取り専用で開かれているため保存できません"
         );
 
+        let (vehicle_id, connection_session_id) = self
+            .capture_context
+            .context("車両登録と接続セッション確定前のフレームは保存できません")?;
         self.connection
             .execute(
                 r#"
                 INSERT INTO can_frames (
+                    vehicle_id,
+                    connection_session_id,
                     signal_type,
                     can_id,
                     is_extended,
@@ -387,9 +544,11 @@ impl DuckdbCanFrameRepository {
                     data,
                     received_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                 "#,
                 params![
+                    vehicle_id,
+                    connection_session_id,
                     kind.as_str(),
                     frame.id,
                     frame.is_extended,
@@ -409,6 +568,9 @@ impl DuckdbCanFrameRepository {
             "DuckDBログは読み取り専用で開かれているため保存できません"
         );
 
+        let (vehicle_id, connection_session_id) = self
+            .capture_context
+            .context("車両登録と接続セッション確定前のフレームは保存できません")?;
         let transaction = self
             .connection
             .transaction()
@@ -418,6 +580,8 @@ impl DuckdbCanFrameRepository {
             let mut statement = transaction.prepare(
                 r#"
                 INSERT INTO can_frames (
+                    vehicle_id,
+                    connection_session_id,
                     signal_type,
                     can_id,
                     is_extended,
@@ -425,12 +589,14 @@ impl DuckdbCanFrameRepository {
                     data,
                     received_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                 "#,
             )?;
 
             for frame in frames {
                 statement.execute(params![
+                    vehicle_id,
+                    connection_session_id,
                     kind.as_str(),
                     frame.id,
                     frame.is_extended,
@@ -470,6 +636,7 @@ mod tests {
         assert!(!db_path.parent().unwrap().exists());
 
         let mut repo = DuckdbCanFrameRepository::open(&db_path).expect("Should open/create DB");
+        repo.set_capture_context(1, 1);
         repo.save(&CanFrame::new(0x123, false, false, vec![0x10, 0x20]))
             .unwrap();
         repo.checkpoint().unwrap();
@@ -480,8 +647,34 @@ mod tests {
     }
 
     #[test]
-    fn can_id_observations_are_aggregated_from_logs() {
+    fn frames_are_rejected_until_vehicle_and_session_are_known() {
         let mut repo = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let result = repo.save(&CanFrame::new(0x123, false, false, vec![1]));
+        assert!(result.is_err());
+        assert!(repo.list_recent_frames(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn raw_frames_are_isolated_by_vehicle() {
+        let mut repo = DuckdbCanFrameRepository::open_in_memory_with_context(1, 10).unwrap();
+        repo.save(&CanFrame::new(0x101, false, false, vec![1]))
+            .unwrap();
+        repo.set_capture_context(2, 20);
+        repo.save(&CanFrame::new(0x202, false, false, vec![2]))
+            .unwrap();
+        assert_eq!(
+            repo.list_recent_frames_for_vehicle(1, 10).unwrap()[0].id,
+            0x101
+        );
+        assert_eq!(
+            repo.list_recent_frames_for_vehicle(2, 10).unwrap()[0].id,
+            0x202
+        );
+    }
+
+    #[test]
+    fn can_id_observations_are_aggregated_from_logs() {
+        let mut repo = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         repo.save(&CanFrame::new(0x123, false, false, vec![0x10, 0x20]))
             .unwrap();
         repo.save(&CanFrame::new(0x123, false, false, vec![0x30, 0x40]))
@@ -501,7 +694,7 @@ mod tests {
 
     #[test]
     fn recent_frames_are_returned_in_capture_order() {
-        let mut repo = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut repo = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         repo.save(&CanFrame::new(0x100, false, false, vec![0x10]))
             .unwrap();
         repo.save(&CanFrame::new(0x200, false, false, vec![0x20]))

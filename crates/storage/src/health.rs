@@ -59,8 +59,9 @@ impl DuckdbCanFrameRepository {
         session: &car_logger_health::DrivingSession,
         samples: &[car_logger_health::SignalSample],
     ) -> Result<()> {
-        self.connection().execute("INSERT OR IGNORE INTO driving_sessions(started_at,ended_at,sample_count,complete,algorithm_version) VALUES(?1,?2,?3,?4,?5)",params![session.started_at.to_rfc3339(),session.ended_at.to_rfc3339(),session.sample_count,session.complete,ALGORITHM_VERSION])?;
-        let id:i64=self.connection().query_row("SELECT id FROM driving_sessions WHERE started_at=?1 AND ended_at=?2 AND algorithm_version=?3",params![session.started_at.to_rfc3339(),session.ended_at.to_rfc3339(),ALGORITHM_VERSION],|r|r.get(0))?;
+        let vehicle_id = self.vehicle_scope()?;
+        self.connection().execute("INSERT OR IGNORE INTO driving_sessions(vehicle_id,started_at,ended_at,sample_count,complete,algorithm_version) VALUES(?1,?2,?3,?4,?5,?6)",params![vehicle_id,session.started_at.to_rfc3339(),session.ended_at.to_rfc3339(),session.sample_count,session.complete,ALGORITHM_VERSION])?;
+        let id:i64=self.connection().query_row("SELECT id FROM driving_sessions WHERE vehicle_id=?1 AND started_at=?2 AND ended_at=?3 AND algorithm_version=?4",params![vehicle_id,session.started_at.to_rfc3339(),session.ended_at.to_rfc3339(),ALGORITHM_VERSION],|r|r.get(0))?;
         for f in features(samples) {
             self.connection().execute(
                 "INSERT OR IGNORE INTO health_session_features(session_id,signal_key,driving_state,mean,deviation,sample_count,duration_seconds,feature_schema_version) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -80,8 +81,9 @@ impl DuckdbCanFrameRepository {
     }
 
     fn rebuild_scores(&self) -> Result<usize> {
-        let mut st=self.connection().prepare("SELECT id,started_at,ended_at,sample_count FROM driving_sessions WHERE complete=true AND algorithm_version=?1 ORDER BY started_at")?;
-        let rows = st.query_map(params![ALGORITHM_VERSION], |r| {
+        let vehicle_id = self.vehicle_scope()?;
+        let mut st=self.connection().prepare("SELECT id,started_at,ended_at,sample_count FROM driving_sessions WHERE vehicle_id=?1 AND complete=true AND algorithm_version=?2 ORDER BY started_at")?;
+        let rows = st.query_map(params![vehicle_id, ALGORITHM_VERSION], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
@@ -103,8 +105,9 @@ impl DuckdbCanFrameRepository {
             .sum::<f64>();
         let learn = learning_state(sessions.len() as u32, total_seconds);
         self.connection().execute(
-            "INSERT OR REPLACE INTO health_baselines VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT OR REPLACE INTO health_baselines VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
+                vehicle_id,
                 BASELINE_VERSION,
                 ALGORITHM_VERSION,
                 FEATURE_SCHEMA_VERSION,
@@ -144,9 +147,9 @@ impl DuckdbCanFrameRepository {
                 LearningState::InsufficientData => ScoreStatus::InsufficientData,
             };
             let score = Some(100.0);
-            let changed=self.connection().execute("INSERT OR IGNORE INTO health_score_periods(granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![g,ps.to_rfc3339(),pe.to_rfc3339(),score,confidence,status.as_str(),items.len() as u32,duration,count,coverage,ALGORITHM_VERSION,BASELINE_VERSION,FEATURE_SCHEMA_VERSION,Utc::now().to_rfc3339()])?;
+            let changed=self.connection().execute("INSERT OR IGNORE INTO health_score_periods(vehicle_id,granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",params![vehicle_id,g,ps.to_rfc3339(),pe.to_rfc3339(),score,confidence,status.as_str(),items.len() as u32,duration,count,coverage,ALGORITHM_VERSION,BASELINE_VERSION,FEATURE_SCHEMA_VERSION,Utc::now().to_rfc3339()])?;
             created += changed;
-            let score_id:i64=self.connection().query_row("SELECT id FROM health_score_periods WHERE granularity=?1 AND period_start=?2 AND period_end=?3 AND algorithm_version=?4 AND baseline_version=?5 AND feature_schema_version=?6",params![g,ps.to_rfc3339(),pe.to_rfc3339(),ALGORITHM_VERSION,BASELINE_VERSION,FEATURE_SCHEMA_VERSION],|r|r.get(0))?;
+            let score_id:i64=self.connection().query_row("SELECT id FROM health_score_periods WHERE vehicle_id=?1 AND granularity=?2 AND period_start=?3 AND period_end=?4 AND algorithm_version=?5 AND baseline_version=?6 AND feature_schema_version=?7",params![vehicle_id,g,ps.to_rfc3339(),pe.to_rfc3339(),ALGORITHM_VERSION,BASELINE_VERSION,FEATURE_SCHEMA_VERSION],|r|r.get(0))?;
             let domains = [
                 ScoreDomain::Thermal,
                 ScoreDomain::Electrical,
@@ -154,7 +157,7 @@ impl DuckdbCanFrameRepository {
                 ScoreDomain::RunningStability,
             ];
             for d in domains {
-                let available:bool=self.connection().query_row("SELECT count(*)>0 FROM health_session_features f JOIN driving_sessions s ON s.id=f.session_id WHERE s.started_at<?1 AND s.ended_at>=?2 AND ((?3='thermal' AND f.signal_key IN ('coolant_temperature','oil_temperature','intake_temperature','catalyst_temperature')) OR (?3='electrical' AND f.signal_key='module_voltage') OR (?3='air_fuel' AND f.signal_key IN ('short_term_fuel_trim','long_term_fuel_trim','mass_air_flow','manifold_pressure')) OR (?3='running_stability' AND f.signal_key IN ('rpm','vehicle_speed','engine_load','throttle_position')))",params![pe.to_rfc3339(),ps.to_rfc3339(),d.as_str()],|r|r.get(0))?;
+                let available:bool=self.connection().query_row("SELECT count(*)>0 FROM health_session_features f JOIN driving_sessions s ON s.id=f.session_id WHERE s.vehicle_id=?1 AND s.started_at<?2 AND s.ended_at>=?3 AND ((?4='thermal' AND f.signal_key IN ('coolant_temperature','oil_temperature','intake_temperature','catalyst_temperature')) OR (?4='electrical' AND f.signal_key='module_voltage') OR (?4='air_fuel' AND f.signal_key IN ('short_term_fuel_trim','long_term_fuel_trim','mass_air_flow','manifold_pressure')) OR (?4='running_stability' AND f.signal_key IN ('rpm','vehicle_speed','engine_load','throttle_position')))",params![vehicle_id,pe.to_rfc3339(),ps.to_rfc3339(),d.as_str()],|r|r.get(0))?;
                 self.connection().execute(
                     "INSERT OR IGNORE INTO health_score_components VALUES(?1,?2,?3,?4,?5)",
                     params![
@@ -250,10 +253,11 @@ fn period_bounds(
 impl HealthScoreRepository for DuckdbCanFrameRepository {
     fn backfill(&mut self, chunk_size: usize) -> Result<HealthProgress> {
         self.writable()?;
+        let vehicle_id = self.vehicle_scope()?;
         ensure!(chunk_size > 0, "chunk_sizeは1以上が必要です");
         let previous = self.connection().query_row(
-            "SELECT last_sequence_id,total_rows,processed_rows,completed FROM health_backfill_state WHERE operation='backfill'",
-            [],
+            "SELECT last_sequence_id,total_rows,processed_rows,completed FROM health_backfill_state WHERE vehicle_id=?1 AND operation='backfill'",
+            params![vehicle_id],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u64>(1)?, r.get::<_, u64>(2)?, r.get::<_, bool>(3)?)),
         ).ok();
         let (last, mut total, processed_before, was_completed) =
@@ -262,14 +266,14 @@ impl HealthScoreRepository for DuckdbCanFrameRepository {
         // chunked run, progress advances arithmetically without rescanning raw logs.
         if was_completed {
             let pending: u64 = self.connection().query_row(
-                "SELECT count(*) FROM can_frames WHERE signal_type='PID' AND sequence_id>?1",
-                params![last],
+                "SELECT count(*) FROM can_frames WHERE vehicle_id=?1 AND signal_type='PID' AND sequence_id>?2",
+                params![vehicle_id, last],
                 |r| r.get(0),
             )?;
             total = processed_before.saturating_add(pending);
         }
-        let mut st=self.connection().prepare("SELECT sequence_id,can_id,data,epoch_us(received_at) FROM can_frames WHERE signal_type='PID' AND sequence_id>?1 ORDER BY sequence_id LIMIT ?2")?;
-        let rows = st.query_map(params![last, chunk_size as i64], |r| {
+        let mut st=self.connection().prepare("SELECT sequence_id,can_id,data,epoch_us(received_at) FROM can_frames WHERE vehicle_id=?1 AND signal_type='PID' AND sequence_id>?2 ORDER BY sequence_id LIMIT ?3")?;
+        let rows = st.query_map(params![vehicle_id, last, chunk_size as i64], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 r.get::<_, u32>(1)?,
@@ -300,8 +304,15 @@ impl HealthScoreRepository for DuckdbCanFrameRepository {
         total = total.max(processed);
         let completed = rows.len() < chunk_size;
         self.connection().execute(
-            "INSERT OR REPLACE INTO health_backfill_state VALUES('backfill',?1,?2,?3,?4,?5)",
-            params![new_last, total, processed, completed, now.to_rfc3339()],
+            "INSERT OR REPLACE INTO health_backfill_state VALUES(?1,'backfill',?2,?3,?4,?5,?6)",
+            params![
+                vehicle_id,
+                new_last,
+                total,
+                processed,
+                completed,
+                now.to_rfc3339()
+            ],
         )?;
         if completed {
             self.rebuild_scores()?;
@@ -325,16 +336,18 @@ impl HealthScoreRepository for DuckdbCanFrameRepository {
         s: DateTime<Utc>,
         e: DateTime<Utc>,
     ) -> Result<Vec<StoredHealthScore>> {
-        let mut st=self.connection().prepare("SELECT id,granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at FROM health_score_periods WHERE granularity=?1 AND period_start<?2 AND period_end>?3 ORDER BY period_start")?;
+        let vehicle_id = self.vehicle_scope()?;
+        let mut st=self.connection().prepare("SELECT id,granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at FROM health_score_periods WHERE vehicle_id=?1 AND granularity=?2 AND period_start<?3 AND period_end>?4 ORDER BY period_start")?;
         let rows = st.query_map(
-            params![g.as_str(), e.to_rfc3339(), s.to_rfc3339()],
+            params![vehicle_id, g.as_str(), e.to_rfc3339(), s.to_rfc3339()],
             map_score,
         )?;
         Ok(rows.collect::<duckdb::Result<Vec<_>>>()?)
     }
     fn latest_score(&self, g: ScoreGranularity) -> Result<Option<StoredHealthScore>> {
-        let mut st=self.connection().prepare("SELECT id,granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at FROM health_score_periods WHERE granularity=?1 ORDER BY period_end DESC LIMIT 1")?;
-        let mut rows = st.query_map(params![g.as_str()], map_score)?;
+        let vehicle_id = self.vehicle_scope()?;
+        let mut st=self.connection().prepare("SELECT id,granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at FROM health_score_periods WHERE vehicle_id=?1 AND granularity=?2 ORDER BY period_end DESC LIMIT 1")?;
+        let mut rows = st.query_map(params![vehicle_id, g.as_str()], map_score)?;
         Ok(rows.next().transpose()?)
     }
     fn components(&self, id: i64) -> Result<Vec<StoredComponent>> {
@@ -365,7 +378,26 @@ impl HealthScoreRepository for DuckdbCanFrameRepository {
     }
     fn recalculate_all(&mut self, chunk_size: usize) -> Result<HealthProgress> {
         self.writable()?;
-        self.connection().execute_batch("DELETE FROM health_score_reasons; DELETE FROM health_score_components; DELETE FROM health_score_periods; DELETE FROM health_session_features; DELETE FROM driving_sessions; DELETE FROM health_baselines; DELETE FROM health_backfill_state WHERE operation='backfill';")?;
+        let vehicle_id = self.vehicle_scope()?;
+        self.connection().execute("DELETE FROM health_score_reasons WHERE score_id IN (SELECT id FROM health_score_periods WHERE vehicle_id=?1)", params![vehicle_id])?;
+        self.connection().execute("DELETE FROM health_score_components WHERE score_id IN (SELECT id FROM health_score_periods WHERE vehicle_id=?1)", params![vehicle_id])?;
+        self.connection().execute(
+            "DELETE FROM health_score_periods WHERE vehicle_id=?1",
+            params![vehicle_id],
+        )?;
+        self.connection().execute("DELETE FROM health_session_features WHERE session_id IN (SELECT id FROM driving_sessions WHERE vehicle_id=?1)", params![vehicle_id])?;
+        self.connection().execute(
+            "DELETE FROM driving_sessions WHERE vehicle_id=?1",
+            params![vehicle_id],
+        )?;
+        self.connection().execute(
+            "DELETE FROM health_baselines WHERE vehicle_id=?1",
+            params![vehicle_id],
+        )?;
+        self.connection().execute(
+            "DELETE FROM health_backfill_state WHERE vehicle_id=?1 AND operation='backfill'",
+            params![vehicle_id],
+        )?;
         // A recalculation is one application operation even though backfill is
         // deliberately chunked. Calling backfill only once left large logs in
         // a partially rebuilt state and made callers accidentally restart it.
@@ -375,16 +407,17 @@ impl HealthScoreRepository for DuckdbCanFrameRepository {
                 progress.operation = "recalculate".into();
                 progress.updated_at = Utc::now();
                 self.connection().execute(
-                    "INSERT OR REPLACE INTO health_backfill_state VALUES('recalculate',?1,?2,?3,true,?4)",
-                    params![progress.last_sequence_id, progress.total_rows, progress.processed_rows, progress.updated_at.to_rfc3339()],
+                    "INSERT OR REPLACE INTO health_backfill_state VALUES(?1,'recalculate',?2,?3,?4,true,?5)",
+                    params![vehicle_id, progress.last_sequence_id, progress.total_rows, progress.processed_rows, progress.updated_at.to_rfc3339()],
                 )?;
                 return Ok(progress);
             }
         }
     }
     fn health_progress(&self) -> Result<Option<HealthProgress>> {
-        let mut st=self.connection().prepare("SELECT operation,last_sequence_id,total_rows,processed_rows,completed,updated_at FROM health_backfill_state ORDER BY updated_at DESC LIMIT 1")?;
-        let mut rows = st.query_map([], |r| {
+        let vehicle_id = self.vehicle_scope()?;
+        let mut st=self.connection().prepare("SELECT operation,last_sequence_id,total_rows,processed_rows,completed,updated_at FROM health_backfill_state WHERE vehicle_id=?1 ORDER BY updated_at DESC LIMIT 1")?;
+        let mut rows = st.query_map(params![vehicle_id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
@@ -442,7 +475,7 @@ mod tests {
     use car_logger_domain::{CanFrame, SignalKind};
     #[test]
     fn migration_is_idempotent_and_preserves_raw() {
-        let mut r = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut r = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         let f = CanFrame {
             received_at: Utc::now() - Duration::minutes(10),
             ..CanFrame::new(0x0c, false, false, vec![0x0c, 0x80])
@@ -455,7 +488,7 @@ mod tests {
     }
     #[test]
     fn backfill_resumes_and_prevents_duplicates() {
-        let mut r = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut r = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         for i in 0..5 {
             let f = CanFrame {
                 received_at: Utc::now() - Duration::seconds(10 - i),
@@ -492,7 +525,7 @@ mod tests {
     }
     #[test]
     fn completed_backfill_resumes_from_its_checkpoint_when_new_frames_arrive() {
-        let mut r = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let mut r = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         let first = CanFrame {
             received_at: Utc::now() - Duration::seconds(2),
             ..CanFrame::new(0x0c, false, false, vec![0x0c, 0x80])
@@ -521,5 +554,29 @@ mod tests {
         drop(DuckdbCanFrameRepository::open(&p).unwrap());
         let mut r = DuckdbCanFrameRepository::open_read_only(&p).unwrap();
         assert!(r.backfill(10).is_err());
+    }
+
+    #[test]
+    fn health_scores_are_isolated_by_viewed_vehicle() {
+        let mut r = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
+        for (vehicle, score) in [(1, 91.0), (2, 42.0)] {
+            r.connection().execute("INSERT INTO health_score_periods(vehicle_id,granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at) VALUES(?1,'day','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',?2,100,'scored',1,60,1,1,'a','b','c','2026-01-02T00:00:00Z')", params![vehicle,score]).unwrap();
+        }
+        r.select_vehicle(1);
+        assert_eq!(
+            r.latest_score(ScoreGranularity::Day)
+                .unwrap()
+                .unwrap()
+                .score,
+            Some(91.0)
+        );
+        r.select_vehicle(2);
+        assert_eq!(
+            r.latest_score(ScoreGranularity::Day)
+                .unwrap()
+                .unwrap()
+                .score,
+            Some(42.0)
+        );
     }
 }

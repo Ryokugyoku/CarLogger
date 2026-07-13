@@ -149,9 +149,9 @@ mod tests {
 
     #[test]
     fn ai_reset_preserves_raw_logs_and_statistical_scores() {
-        let repo = DuckdbCanFrameRepository::open_in_memory().unwrap();
-        repo.connection().execute("INSERT INTO can_frames(signal_type,can_id,is_extended,is_remote,data,received_at) VALUES('PID',1,false,false,?1,'2026-01-01T00:00:00Z')", params![vec![1_u8]]).unwrap();
-        repo.connection().execute("INSERT INTO health_score_periods(granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at) VALUES('day','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',90,100,'scored',1,60,1,1,'a','b','c','2026-01-02T00:00:00Z')", []).unwrap();
+        let repo = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
+        repo.connection().execute("INSERT INTO can_frames(vehicle_id,connection_session_id,signal_type,can_id,is_extended,is_remote,data,received_at) VALUES(1,1,'PID',1,false,false,?1,'2026-01-01T00:00:00Z')", params![vec![1_u8]]).unwrap();
+        repo.connection().execute("INSERT INTO health_score_periods(vehicle_id,granularity,period_start,period_end,overall_score,confidence,status,session_count,evaluated_seconds,sample_count,data_coverage,algorithm_version,baseline_version,feature_schema_version,calculated_at) VALUES(1,'day','2026-01-01T00:00:00Z','2026-01-02T00:00:00Z',90,100,'scored',1,60,1,1,'a','b','c','2026-01-02T00:00:00Z')", []).unwrap();
         repo.connection().execute("INSERT INTO ai_notifications(kind,observed_at,message) VALUES('change','2026-01-01T00:00:00Z','x')", []).unwrap();
         repo.reset_ai_data().unwrap();
         let raw: u64 = repo
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn ai_reset_refuses_to_compete_with_training() {
-        let repo = DuckdbCanFrameRepository::open_in_memory().unwrap();
+        let repo = DuckdbCanFrameRepository::open_in_memory_with_context(1, 1).unwrap();
         assert!(
             repo.try_start_training_job("request", "generation")
                 .unwrap()
